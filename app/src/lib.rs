@@ -2851,6 +2851,8 @@ pub fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::AgentHarness,
         #[cfg(feature = "oz_handoff")]
         FeatureFlag::OzHandoff,
+        #[cfg(feature = "local_to_cloud_handoff")]
+        FeatureFlag::LocalToCloudHandoff,
         #[cfg(feature = "hoa_notifications")]
         FeatureFlag::HOANotifications,
         #[cfg(feature = "open_code_notifications")]

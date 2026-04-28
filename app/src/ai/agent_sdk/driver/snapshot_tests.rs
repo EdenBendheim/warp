@@ -248,7 +248,7 @@ fn run(
         .block_on(upload_snapshot_from_declarations_file(
             &declarations_path,
             client,
-            &fake_task_id(),
+            &fake_log_label(),
         ))
         .expect("pipeline returned None");
     let summary = SnapshotSummary::from_entries(&outcome.entries, outcome.manifest_uploaded);
@@ -276,7 +276,7 @@ fn parse_declarations_ignores_blank_lines() {
         "{\"version\":1,\"kind\":\"file\",\"path\":\"/abs/file.txt\"}\n",
         "\n",
     );
-    let entries = parse_declarations(contents, &fake_task_id());
+    let entries = parse_declarations(contents, &fake_log_label());
     assert_eq!(
         entries,
         vec![
@@ -302,7 +302,7 @@ fn parse_declarations_skips_malformed_lines_without_aborting() {
         "{\"version\":1,\"kind\":\"file\"}\n",
         "{\"version\":1,\"kind\":\"file\",\"path\":\"/abs/also-good\",\"extra\":true}\n",
     );
-    let entries = parse_declarations(contents, &fake_task_id());
+    let entries = parse_declarations(contents, &fake_log_label());
     assert_eq!(
         entries,
         vec![
@@ -325,7 +325,7 @@ fn parse_declarations_skips_missing_or_unsupported_versions() {
         "{\"version\":2,\"kind\":\"repo\",\"path\":\"/abs/unsupported-version\"}\n",
         "{\"version\":1,\"kind\":\"file\",\"path\":\"/abs/good\"}\n",
     );
-    let entries = parse_declarations(contents, &fake_task_id());
+    let entries = parse_declarations(contents, &fake_log_label());
     assert_eq!(
         entries,
         vec![DeclarationEntry {
@@ -342,7 +342,7 @@ fn parse_declarations_tolerates_crlf_line_endings() {
         "{\"version\":1,\"kind\":\"repo\",\"path\":\"/abs/good\"}\r\n",
         "{\"version\":1,\"kind\":\"file\",\"path\":\"/abs/also-good\"}\r\n",
     );
-    let entries = parse_declarations(contents, &fake_task_id());
+    let entries = parse_declarations(contents, &fake_log_label());
     assert_eq!(
         entries,
         vec![
@@ -365,7 +365,7 @@ fn parse_declarations_skips_lines_with_empty_path() {
         "{\"version\":1,\"kind\":\"file\",\"path\":\"   \"}\n",
         "{\"version\":1,\"kind\":\"repo\",\"path\":\"/abs/still-good\"}\n",
     );
-    let entries = parse_declarations(contents, &fake_task_id());
+    let entries = parse_declarations(contents, &fake_log_label());
     assert_eq!(
         entries,
         vec![DeclarationEntry {
@@ -382,7 +382,7 @@ fn parse_declarations_deduplicates_kind_path_pairs() {
         "{\"version\":1,\"kind\":\"repo\",\"path\":\"/abs/repo\"}\n",
         "{\"version\":1,\"kind\":\"file\",\"path\":\"/abs/repo\"}\n",
     );
-    let entries = parse_declarations(contents, &fake_task_id());
+    let entries = parse_declarations(contents, &fake_log_label());
     assert_eq!(
         entries,
         vec![
@@ -409,7 +409,7 @@ fn upload_skipped_when_declarations_file_missing() {
         .block_on(upload_snapshot_from_declarations_file(
             &missing,
             client,
-            &fake_task_id(),
+            &fake_log_label(),
         ));
     assert!(
         outcome.is_none(),
@@ -429,7 +429,7 @@ fn upload_skipped_when_declarations_file_empty() {
         .block_on(upload_snapshot_from_declarations_file(
             &decl,
             client,
-            &fake_task_id(),
+            &fake_log_label(),
         ));
     assert!(outcome.is_none(), "empty declarations file should skip");
 }
@@ -450,7 +450,7 @@ fn upload_skipped_when_declarations_file_has_no_valid_jsonl_entries() {
         .block_on(upload_snapshot_from_declarations_file(
             &decl,
             client,
-            &fake_task_id(),
+            &fake_log_label(),
         ));
     assert!(
         outcome.is_none(),
@@ -492,6 +492,12 @@ fn resolve_declarations_path_uses_task_id_when_provided() {
 /// the string form is what ends up as the per-run directory name.
 fn fake_task_id() -> AmbientAgentTaskId {
     "550e8400-e29b-41d4-a716-446655440000".parse().unwrap()
+}
+
+/// Builder-side helper for tests that exercise helpers taking a `log_label: &str`. The exact
+/// label content is irrelevant to the helpers — they only embed it in log lines.
+fn fake_log_label() -> String {
+    format!("task {}", fake_task_id())
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -980,7 +986,7 @@ fn e2e_get_snapshot_upload_targets_failure_returns_none() {
         .block_on(upload_snapshot_from_declarations_file(
             &declarations_path,
             client,
-            &fake_task_id(),
+            &fake_log_label(),
         ));
     assert!(
         outcome.is_none(),
@@ -1024,7 +1030,7 @@ fn e2e_short_response_leaves_trailing_file_without_target() {
         .block_on(upload_snapshot_from_declarations_file(
             &declarations_path,
             client,
-            &fake_task_id(),
+            &fake_log_label(),
         ))
         .expect("pipeline returned None");
     let summary = SnapshotSummary::from_entries(&outcome.entries, outcome.manifest_uploaded);

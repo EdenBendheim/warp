@@ -844,6 +844,12 @@ pub enum FeatureFlag {
     ConfigurableContextWindow,
     /// Enables continuing cloud mode conversations in the cloud after an execution ends.
     HandoffCloudCloud,
+
+    /// Enables the local-to-cloud Oz handoff entry points (footer chip and
+    /// `/oz-cloud-handoff` slash command) that fork the active local Oz
+    /// conversation into a fresh cloud agent run with the current workspace
+    /// snapshot attached. Requires `OzHandoff` to also be enabled.
+    LocalToCloudHandoff,
 }
 
 static FLAG_STATES: [AtomicBool; cardinality::<FeatureFlag>()] =

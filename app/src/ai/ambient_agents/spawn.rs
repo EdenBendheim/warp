@@ -33,29 +33,25 @@ pub struct SessionJoinInfo {
 impl SessionJoinInfo {
     pub fn from_task(task: &AmbientAgentTask) -> Option<Self> {
         let run_execution = task.active_run_execution();
-        // Prefer the server-provided session_link when available; it is a better signal
-        // that a session-sharing link is ready to be shown to the user.
-        if let Some(link) = run_execution.session_link {
-            let session_id = run_execution
-                .session_id
-                .and_then(|session_id| SessionId::from_str(session_id).ok());
-            return Some(Self {
-                session_id,
-                session_link: link.to_string(),
-            });
-        }
-
-        // Fallback to constructing a link from the session_id.
-        if let Some(session_id) = run_execution.session_id {
-            if let Ok(session_id) = SessionId::from_str(session_id) {
-                return Some(Self {
-                    session_id: Some(session_id),
-                    session_link: shared_session::join_link(&session_id),
-                });
-            }
-        }
-
-        None
+        // Require `session_id`: it's what the cloud-mode pane needs to actually join
+        // the shared session.
+        // A standalone `session_link` is not enough to act on, and the GET task
+        // handler may overwrite `session_link` with a conversation link (e.g. for a
+        // local-to-cloud handoff fork that already has gcs-synced conversation data),
+        // which we'd otherwise misinterpret as a session-sharing link.
+        let session_id_str = run_execution.session_id?;
+        let session_id = SessionId::from_str(session_id_str).ok()?;
+        // Prefer the server-provided `session_link` when present; otherwise construct
+        // a join link from `session_id`. `active_run_execution()` already filters out
+        // empty links, so we can trust `Some(_)` here.
+        let session_link = run_execution
+            .session_link
+            .map(String::from)
+            .unwrap_or_else(|| shared_session::join_link(&session_id));
+        Some(Self {
+            session_id: Some(session_id),
+            session_link,
+        })
     }
 }
 

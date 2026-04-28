@@ -487,6 +487,19 @@ pub enum WorkspaceAction {
     },
     /// Insert the /fork slash command into the active terminal's input.
     InsertForkSlashCommand,
+    /// Open a local-to-cloud handoff pane next to the active conversation
+    /// (REMOTE-1486). Triggered by the `/oz-cloud-handoff` slash command
+    /// and the footer chip of the same name. The dispatch site reads the
+    /// active conversation's `server_conversation_token` and gates on
+    /// `FeatureFlag::OzHandoff && FeatureFlag::LocalToCloudHandoff`.
+    /// Falls through to splitting a fresh cloud-mode pane when the active
+    /// conversation isn't handoff-able (no synced server token, empty, or no
+    /// active conversation at all).
+    OpenLocalToCloudHandoffPane {
+        /// Pre-fill the new pane's prompt input (slash command captures the
+        /// trailing argument; the chip leaves this `None`).
+        initial_prompt: Option<String>,
+    },
     /// Summarize the active AI conversation in the focused pane.
     SummarizeAIConversation {
         prompt: Option<String>,
@@ -940,6 +953,7 @@ impl WorkspaceAction {
             | TabConfigSidecarRemoveConfig { .. }
             | OpenSettingsFile
             | FixSettingsWithOz { .. }
+            | OpenLocalToCloudHandoffPane { .. }
             | OpenNetworkLogPane => false,
             #[cfg(debug_assertions)]
             ShowHoaOnboardingFlow => false,

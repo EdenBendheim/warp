@@ -226,6 +226,47 @@ pub struct SpawnAgentRequest {
     /// Base64-encoded `warp.multi_agent.v1.Attachment` payloads to restore as referenced attachments.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub referenced_attachments: Vec<String>,
+    /// When set, instructs the server to fork the named conversation and use the resulting
+    /// fork id as `task.AgentConversationID`. Mutually exclusive with the existing
+    /// `conversation_id` field (resume semantics) on the server. Used by the local-to-cloud
+    /// handoff flow (REMOTE-1486).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fork_from_conversation_id: Option<String>,
+    /// References a batch of files previously uploaded to handoff_prep/{prep_token}/ via
+    /// `POST /agent/handoff/prepare-snapshot`. The server moves them into
+    /// snapshots/{task_id}/{execution_id}/ post-task-creation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handoff_prep_token: Option<String>,
+}
+
+/// Request body for `POST /agent/handoff/prepare-snapshot`. Used by the local-to-cloud
+/// handoff flow (REMOTE-1486) to allocate a prep_token and presigned upload URLs scoped to
+/// `handoff_prep/{prep_token}/` before any task exists.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PrepareHandoffSnapshotRequest {
+    pub files: Vec<HandoffSnapshotFileInfo>,
+}
+
+/// Describes a single file the client wants to upload as part of a handoff snapshot.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HandoffSnapshotFileInfo {
+    pub filename: String,
+    pub mime_type: String,
+}
+
+/// Response body for `POST /agent/handoff/prepare-snapshot`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct PrepareHandoffSnapshotResponse {
+    pub prep_token: String,
+    pub expires_at: String,
+    pub uploads: Vec<HandoffSnapshotUploadInfo>,
+}
+
+/// One presigned upload target returned by the prepare-snapshot endpoint.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct HandoffSnapshotUploadInfo {
+    pub filename: String,
+    pub upload_url: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -830,6 +871,13 @@ pub trait AIClient: 'static + Send + Sync {
         &self,
         request: SpawnAgentRequest,
     ) -> anyhow::Result<SpawnAgentResponse, anyhow::Error>;
+
+    /// Allocate a `prep_token` and presigned upload URLs for staging local-to-cloud handoff
+    /// snapshot files before the corresponding cloud task exists.
+    async fn prepare_handoff_snapshot(
+        &self,
+        request: PrepareHandoffSnapshotRequest,
+    ) -> anyhow::Result<PrepareHandoffSnapshotResponse, anyhow::Error>;
 
     async fn list_ambient_agent_tasks(
         &self,
@@ -1447,6 +1495,16 @@ impl AIClient for ServerApi {
         request: SpawnAgentRequest,
     ) -> anyhow::Result<SpawnAgentResponse, anyhow::Error> {
         let response: SpawnAgentResponse = self.post_public_api("agent/run", &request).await?;
+        Ok(response)
+    }
+
+    async fn prepare_handoff_snapshot(
+        &self,
+        request: PrepareHandoffSnapshotRequest,
+    ) -> anyhow::Result<PrepareHandoffSnapshotResponse, anyhow::Error> {
+        let response: PrepareHandoffSnapshotResponse = self
+            .post_public_api("agent/handoff/prepare-snapshot", &request)
+            .await?;
         Ok(response)
     }
 
