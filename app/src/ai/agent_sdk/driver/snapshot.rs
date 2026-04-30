@@ -819,26 +819,29 @@ pub(crate) async fn upload_snapshot_for_handoff(
         response.uploads.len(),
     );
     let prep_token = response.prep_token;
-    let targets: Vec<UploadTarget> = response
-        .uploads
-        .into_iter()
-        .map(|upload| UploadTarget {
-            url: upload.upload_url,
-            method: "PUT".to_string(),
-            headers: HashMap::new(),
-        })
-        .collect();
-    if targets.len() != file_infos.len() {
-        log::warn!(
-            "Handoff snapshot upload-target response length {} does not match request length {}; extras will be marked skipped ({log_label})",
-            targets.len(),
-            file_infos.len(),
+
+    // Build the target_map keyed by the server-echoed `filename` so we never PUT a
+    // file's bytes to the wrong presigned URL if the server reorders or omits entries.
+    // Any requested filename that's missing from the response lands in `upload_entry`
+    // with no target and is marked `skipped` downstream.
+    let mut target_map: HashMap<String, UploadTarget> = HashMap::new();
+    for upload in response.uploads {
+        target_map.insert(
+            upload.filename,
+            UploadTarget {
+                url: upload.upload_url,
+                method: "PUT".to_string(),
+                headers: HashMap::new(),
+            },
         );
     }
-
-    let mut target_map: HashMap<String, UploadTarget> = HashMap::new();
-    for (file, target) in file_infos.iter().zip(targets.into_iter()) {
-        target_map.insert(file.filename.clone(), target);
+    for file in &file_infos {
+        if !target_map.contains_key(&file.filename) {
+            log::warn!(
+                "Handoff snapshot upload-target response missing entry for '{}'; will be marked skipped ({log_label})",
+                file.filename,
+            );
+        }
     }
 
     if let Some(outcome) = upload_prepared_snapshot_files(

@@ -339,6 +339,20 @@ impl AmbientAgentViewModel {
         self.pending_handoff.is_some()
     }
 
+    /// True when this pane is a handoff pane AND the async
+    /// `derive_touched_workspace` derivation has finished AND no submission is
+    /// already in flight. Callers in the input layer use this to gate clearing
+    /// the editor buffer on submit — if derivation hasn't completed yet, we
+    /// must leave the prompt and pending attachments alone instead of
+    /// silently dropping them on the floor.
+    pub(crate) fn is_handoff_ready_to_submit(&self) -> bool {
+        let Some(handoff) = self.pending_handoff.as_ref() else {
+            return false;
+        };
+        handoff.touched_workspace.is_some()
+            && !matches!(handoff.submission_state, HandoffSubmissionState::Starting)
+    }
+
     /// Seeds the handoff context onto this pane. Called by the workspace bootstrap
     /// after splitting in a fresh cloud-mode pane and entering agent view.
     pub(crate) fn set_pending_handoff(
@@ -1149,6 +1163,10 @@ impl AmbientAgentViewModel {
         let ai_client = server_api_provider.get_ai_client();
         let http = server_api_provider.get_http_client();
 
+        // Clone the prompt so the failure path can hand it back to the input
+        // layer for restoration. The orchestrator future consumes the original.
+        let prompt_for_retry = prompt.clone();
+
         ctx.spawn(
             async move {
                 run_handoff(source_conversation_id, workspace, prompt, ai_client, http).await
@@ -1181,11 +1199,19 @@ impl AmbientAgentViewModel {
                     me.spawn_agent_with_request(request, ctx);
                 }
                 Err(err) => {
+                    let error_message = format!("{err}");
                     log::warn!("Handoff prep+upload failed: {err:#}");
                     me.set_pending_handoff_submission_state(
-                        HandoffSubmissionState::Failed(format!("{err}")),
+                        HandoffSubmissionState::Failed(error_message.clone()),
                         ctx,
                     );
+                    // Emit the prompt back so the input layer can repopulate the
+                    // editor and surface the error — otherwise the user is left
+                    // staring at a blank composing pane with no retry path.
+                    ctx.emit(AmbientAgentViewModelEvent::HandoffSubmissionFailed {
+                        prompt: prompt_for_retry,
+                        error_message,
+                    });
                 }
             },
         );
@@ -1269,6 +1295,13 @@ pub enum AmbientAgentViewModelEvent {
     /// The pane's `pending_handoff` was updated — derivation completed, submission
     /// state transitioned, etc.
     PendingHandoffChanged,
+    /// The handoff prep + upload phase failed before the cloud agent was spawned.
+    /// Carries the user's original prompt so the input layer can repopulate the
+    /// editor for retry, plus the error message to surface as a toast.
+    HandoffSubmissionFailed {
+        prompt: String,
+        error_message: String,
+    },
 
     UpdatedSetupCommandVisibility,
 }

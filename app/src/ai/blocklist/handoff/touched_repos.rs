@@ -72,9 +72,11 @@ pub(crate) struct TouchedRepo {
 /// `git remote get-url origin` to parse out the `<owner>/<repo>` for env-overlap
 /// matching. Errors on the git call are non-fatal — `repo_id` stays `None`.
 ///
-/// `paths` must already be absolute. Callers are responsible for collecting them
-/// from the conversation's action results (`RequestFileEdits` / `ReadFile` / `Diff` /
-/// `Grep` / `Glob` `path` fields and `RunShellCommand`'s resolved `cwd`).
+/// `paths` must already be absolute and must come from
+/// [`extract_paths_from_conversation`], which only emits paths the agent
+/// actually wrote to (plus per-exchange cwds for repo discovery). That gate
+/// is what makes the orphan-file branch safe — we never stage a read-only
+/// path like `~/.ssh/id_rsa` for upload.
 pub(crate) async fn derive_touched_workspace(paths: Vec<PathBuf>) -> TouchedWorkspace {
     if paths.is_empty() {
         return TouchedWorkspace::default();
@@ -251,21 +253,22 @@ pub(crate) fn pick_handoff_overlap_env(
 
 // --- Path extraction from `AIConversation` ---
 //
-// Walks an [`AIConversation`] and collects every filesystem path the local agent
-// touched. The output feeds [`derive_touched_workspace`], which groups paths by
-// enclosing `.git` repo and produces the [`TouchedWorkspace`] the orchestrator
-// uploads from.
+// Walks an [`AIConversation`] and collects the filesystem paths the local agent
+// actually wrote to, plus the per-exchange `working_directory`. The output
+// feeds [`derive_touched_workspace`], which groups paths by enclosing `.git`
+// repo and produces the [`TouchedWorkspace`] the orchestrator uploads from.
 //
-// Path sources, per action: `RequestFileEdits` (each edit's file), `ReadFiles`
-// (each location), `Grep` (path), `FileGlob` / `FileGlobV2` (optional path /
-// search_dir), `SearchCodebase` (codebase_path plus absolute partial_paths),
-// `InsertCodeReviewComments` (repo_path), `UploadArtifact` (file_path), plus
-// the per-exchange `working_directory` for shell commands.
+// Read-only actions (`ReadFiles`, `Grep`, `FileGlob*`, `SearchCodebase`,
+// `InsertCodeReviewComments`) are intentionally NOT walked. The handoff
+// snapshot uploads orphan-file contents verbatim, so including a read-only
+// reference like `~/.ssh/id_rsa` would leak unrelated local files into the
+// cloud agent. Limiting the walk to writes (`RequestFileEdits`,
+// `UploadArtifact`) keeps the snapshot to files the user knowingly let the
+// agent author. Repos the agent only browsed are still discoverable through
+// the per-exchange cwd, which is captured below.
 //
 // Paths are kept absolute when they look absolute, and resolved against the
-// exchange's `working_directory` when they don't. Empty / non-existent entries
-// are filtered later in `derive_touched_workspace` — this module produces the
-// maximally-permissive raw set.
+// exchange's `working_directory` when they don't. Empty entries are dropped.
 //
 // Cost is bounded by walking only the [`MAX_TOOL_CALLS_TO_SCAN`] most recent
 // action results across all exchanges. Older actions are skipped under the
@@ -273,8 +276,8 @@ pub(crate) fn pick_handoff_overlap_env(
 // by recent work; this keeps very long conversations from paying an unbounded
 // per-handoff scan cost.
 
-/// Collect every filesystem path that appears in any of the conversation's
-/// action requests (and the cwd of every exchange that ran shell commands),
+/// Collect every filesystem path the agent wrote to in any of the conversation's
+/// write actions (plus the cwd of every exchange that ran shell commands),
 /// capped to the most recent [`MAX_TOOL_CALLS_TO_SCAN`] action results.
 ///
 /// The returned vec is deduplicated and may contain both absolute and
@@ -330,46 +333,26 @@ fn extract_action_paths(
     seen: &mut HashSet<PathBuf>,
 ) {
     match &action.action {
+        // Write actions: the agent authored or replaced these files. Safe to
+        // stage as orphan-file content if they fall outside any git repo.
         AIAgentActionType::RequestFileEdits { file_edits, .. } => {
             for edit in file_edits {
                 push_resolved(edit.file(), cwd, paths, seen);
             }
         }
-        AIAgentActionType::ReadFiles(req) => {
-            for loc in &req.locations {
-                push_resolved(Some(loc.name.as_str()), cwd, paths, seen);
-            }
-        }
-        AIAgentActionType::Grep { path, .. } => {
-            push_resolved(Some(path.as_str()), cwd, paths, seen);
-        }
-        AIAgentActionType::FileGlob { path, .. } => {
-            push_resolved(path.as_deref(), cwd, paths, seen);
-        }
-        AIAgentActionType::FileGlobV2 { search_dir, .. } => {
-            push_resolved(search_dir.as_deref(), cwd, paths, seen);
-        }
-        AIAgentActionType::SearchCodebase(req) => {
-            push_resolved(req.codebase_path.as_deref(), cwd, paths, seen);
-            if let Some(partial_paths) = &req.partial_paths {
-                for partial in partial_paths {
-                    let candidate = Path::new(partial);
-                    if candidate.is_absolute() {
-                        push_resolved(Some(partial.as_str()), cwd, paths, seen);
-                    }
-                }
-            }
-        }
-        AIAgentActionType::InsertCodeReviewComments { repo_path, .. } => {
-            if seen.insert(repo_path.clone()) {
-                paths.push(repo_path.clone());
-            }
-        }
         AIAgentActionType::UploadArtifact(req) => {
             push_resolved(Some(req.file_path.as_str()), cwd, paths, seen);
         }
-        // Actions below don't reference a workspace path the agent touched.
-        AIAgentActionType::RequestCommandOutput { .. }
+        // Read / search actions are intentionally NOT walked. See module-level
+        // comment: including read-only references would let `ReadFiles` on
+        // something like `~/.ssh/id_rsa` leak into the snapshot upload.
+        AIAgentActionType::ReadFiles(_)
+        | AIAgentActionType::Grep { .. }
+        | AIAgentActionType::FileGlob { .. }
+        | AIAgentActionType::FileGlobV2 { .. }
+        | AIAgentActionType::SearchCodebase(_)
+        | AIAgentActionType::InsertCodeReviewComments { .. }
+        | AIAgentActionType::RequestCommandOutput { .. }
         | AIAgentActionType::WriteToLongRunningShellCommand { .. }
         | AIAgentActionType::ReadShellCommandOutput { .. }
         | AIAgentActionType::ReadMCPResource { .. }
