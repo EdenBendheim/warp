@@ -394,6 +394,22 @@ impl AmbientAgentViewModel {
         ctx.emit(AmbientAgentViewModelEvent::PendingHandoffChanged);
     }
 
+    /// Records a chip-click handoff prep+upload failure on the pending handoff.
+    /// Flips the submission state to `Failed` (so the status footer / banner
+    /// reflects the error) and emits `HandoffSubmissionFailed` so the input
+    /// layer can surface a user-visible toast.
+    pub(crate) fn record_handoff_prep_failed(
+        &mut self,
+        error_message: String,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        self.set_pending_handoff_submission_state(
+            HandoffSubmissionState::Failed(error_message.clone()),
+            ctx,
+        );
+        ctx.emit(AmbientAgentViewModelEvent::HandoffSubmissionFailed { error_message });
+    }
+
     /// Records the outcome of the chip-click async snapshot upload on the pending
     /// handoff so `submit_handoff` can read the prep token without re-running
     /// the upload. `Some(token)` is the standard success case; `None` means the
@@ -1276,11 +1292,12 @@ pub enum AmbientAgentViewModelEvent {
     /// The pane's `pending_handoff` was updated — derivation completed, submission
     /// state transitioned, etc.
     PendingHandoffChanged,
-    /// The handoff prep + upload phase failed before the cloud agent was spawned.
-    /// Carries the user's original prompt so the input layer can repopulate the
-    /// editor for retry, plus the error message to surface as a toast.
+    /// The handoff prep + upload phase failed at chip-click time. The input
+    /// layer subscribes to surface the error as a toast; the editor buffer is
+    /// untouched because the user's prompt was never cleared (submit is gated
+    /// behind the cached prep token, so a failed upload prevents submit
+    /// entirely instead of consuming the prompt).
     HandoffSubmissionFailed {
-        prompt: String,
         error_message: String,
     },
 

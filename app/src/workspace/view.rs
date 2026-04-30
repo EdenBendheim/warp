@@ -13236,10 +13236,7 @@ impl Workspace {
                         }
                         Err(err) => {
                             log::warn!("Handoff snapshot upload failed: {err:#}");
-                            model.set_pending_handoff_submission_state(
-                                HandoffSubmissionState::Failed(format!("{err}")),
-                                model_ctx,
-                            );
+                            model.record_handoff_prep_failed(format!("{err}"), model_ctx);
                         }
                     }
                 });

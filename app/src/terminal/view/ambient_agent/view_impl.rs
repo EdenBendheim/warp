@@ -370,9 +370,9 @@ impl TerminalView {
                 ctx.notify();
             }
             AmbientAgentViewModelEvent::HandoffSubmissionFailed { .. } => {
-                // Restoration of the editor buffer + the user-visible toast are
-                // handled by `Input`'s subscription to the same event; nothing
-                // for the terminal view to do here beyond the implicit re-render.
+                // The user-visible toast is handled by `Input`'s subscription
+                // to the same event; nothing for the terminal view to do here
+                // beyond the implicit re-render.
                 ctx.notify();
             }
             AmbientAgentViewModelEvent::UpdatedSetupCommandVisibility => (),

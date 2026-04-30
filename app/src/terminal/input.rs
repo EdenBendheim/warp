@@ -2142,18 +2142,14 @@ impl Input {
                         });
                     }
                 });
-                // REMOTE-1486: prep+upload failures arrive here so we can
-                // repopulate the editor with the user's original prompt (the
-                // submit path cleared it before the orchestrator started) and
-                // surface the error as a toast. Without this branch the user is
-                // left staring at a blank composing pane after a silent log
-                // line.
-                if let AmbientAgentViewModelEvent::HandoffSubmissionFailed {
-                    prompt,
-                    error_message,
-                } = event
+                // REMOTE-1519: chip-click handoff prep+upload failures arrive
+                // here so we can surface the error as a toast. The editor
+                // buffer is intentionally left alone — the user's prompt was
+                // never cleared (chip-click happens before submit), so there
+                // is nothing to restore.
+                if let AmbientAgentViewModelEvent::HandoffSubmissionFailed { error_message } =
+                    event
                 {
-                    me.replace_buffer_content(prompt, ctx);
                     let window_id = ctx.window_id();
                     let toast_message = format!("Failed to prepare cloud handoff: {error_message}");
                     ToastStack::handle(ctx).update(ctx, |ts, ctx| {
