@@ -295,6 +295,7 @@ impl EventLoop {
                                             // For forked conversations, update the viewer's conversation
                                             // to use the new server token (only sent once per fork).
                                             if let Some(forked_from) = forked_from_token {
+                                                log::info!("[DEBUG] AgentResponseEvent link_forked_conversation_token forked_from={forked_from:?}");
                                                 c.link_forked_conversation_token(
                                                     &forked_from,
                                                     &event_clone,
@@ -317,6 +318,7 @@ impl EventLoop {
                     }
                 }
                 OrderedTerminalEventType::AgentConversationReplayStarted => {
+                    log::info!("[DEBUG] AgentConversationReplayStarted (should_suppress={})", self.should_suppress_existing_agent_conversation_replay);
                     let mut model = self.terminal_model.lock();
                     model.set_is_receiving_agent_conversation_replay(true);
                     model.set_should_suppress_existing_agent_conversation_replay(
@@ -324,6 +326,7 @@ impl EventLoop {
                     );
                 }
                 OrderedTerminalEventType::AgentConversationReplayEnded => {
+                    log::info!("[DEBUG] AgentConversationReplayEnded");
                     let mut model = self.terminal_model.lock();
                     model.set_is_receiving_agent_conversation_replay(false);
                     model.set_should_suppress_existing_agent_conversation_replay(false);

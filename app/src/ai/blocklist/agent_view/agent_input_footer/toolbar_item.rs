@@ -73,8 +73,8 @@ pub enum AgentToolbarItemKind {
     /// that splits a fresh cloud-mode pane next to the active local pane.
     /// Visibility is gated only on the `OzHandoff && LocalToCloudHandoff` feature
     /// flags so the chip is always available; the click handler in
-    /// `Workspace::start_local_to_cloud_handoff` falls through to opening a
-    /// fresh cloud-mode pane when the active conversation isn't handoff-able
+    /// `Workspace::start_local_to_cloud_handoff` surfaces an error toast and
+    /// does not open a pane when the active conversation isn't handoff-able
     /// (no synced server token, empty, or no active conversation at all).
     HandoffToCloud,
 }

@@ -5097,6 +5097,8 @@ impl TerminalView {
                 response_stream_id,
                 ..
             } => {
+                let agent_view_active_conv = self.agent_view_controller.as_ref(ctx).agent_view_state().active_conversation_id();
+                log::info!("[DEBUG] AppendedExchange view_id={:?} exchange_id={exchange_id:?} task_id={task_id:?} conversation_id={conversation_id:?} is_hidden={is_hidden} agent_view_active_conv={agent_view_active_conv:?} response_stream_id={response_stream_id:?}", self.view_id);
                 // Hide telemetry banner forever after first AI input user sends.
                 if FeatureFlag::GlobalAIAnalyticsBanner.is_enabled()
                     && !GeneralSettings::as_ref(ctx)
@@ -5133,19 +5135,6 @@ impl TerminalView {
                         .lock()
                         .block_list_mut()
                         .set_is_executing_oz_environment_startup_commands(false);
-                }
-
-                // REMOTE-1486: clear the queued-prompt block on the cloud agent's first
-                // exchange for an Oz local-to-cloud handoff. Mirrors the third-party-harness
-                // path's `HarnessCommandStarted` cleanup, but for the Oz harness the first
-                // `AppendedExchange` is the analogous transition. Idempotent when no block
-                // is currently inserted.
-                if self
-                    .ambient_agent_view_model
-                    .as_ref()
-                    .is_some_and(|model| model.as_ref(ctx).is_local_to_cloud_handoff())
-                {
-                    self.remove_pending_user_query_block(ctx);
                 }
 
                 let should_add_ai_block = history_model
@@ -6896,6 +6885,7 @@ impl TerminalView {
             && is_cloud_agent_pre_first_exchange(
                 self.ambient_agent_view_model.as_ref(),
                 &self.agent_view_controller,
+                &self.model,
                 app,
             )
         {
@@ -23193,7 +23183,12 @@ impl TerminalView {
         // Save a backup of the conversation before truncating, so users can restore it later.
         BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
             if let Some(conversation) = history_model.conversation(&conversation_id).cloned() {
-                if let Err(e) = history_model.fork_conversation(&conversation, PRE_REWIND_PREFIX, ctx) {
+                if let Err(e) = history_model.fork_conversation(
+                    &conversation,
+                    PRE_REWIND_PREFIX,
+                    false, /* preserve_task_ids */
+                    ctx,
+                ) {
                     log::warn!("Failed to save pre-rewind backup of conversation {conversation_id}: {e}");
                 }
             } else {
@@ -25739,6 +25734,7 @@ impl View for TerminalView {
                         && is_cloud_agent_pre_first_exchange(
                             self.ambient_agent_view_model.as_ref(),
                             &self.agent_view_controller,
+                            &self.model,
                             app,
                         )
                     {

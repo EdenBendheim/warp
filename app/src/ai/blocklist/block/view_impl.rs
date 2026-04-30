@@ -159,22 +159,20 @@ fn add_slash_command_highlight(
 /// query blocks during live startup/streaming.
 ///
 /// To avoid duplicate UI, we suppress the AI block header/query only while the viewer is live
-/// (not replaying historical conversation events).
-///
-/// The prompts are rendered in the ambient-agent query block UI, so this helper only gates
-/// duplicate rendering in the AI block path when that optimistic block was actually inserted.
+/// (not replaying historical conversation events) AND the AI block's display query matches an
+/// optimistically rendered user query. The per-query check is important for forked
+/// conversations (e.g. local-to-cloud handoff) where the conversation's first exchange comes
+/// from the source conversation and must remain visible — only the dispatched prompt has a
+/// matching optimistic block to defer to.
 fn should_hide_ai_block_query_and_header(
-    has_inserted_cloud_mode_user_query_block: bool,
     has_optimistic_user_query: bool,
     is_shared_ambient_agent_session: bool,
-    is_first_exchange: bool,
     is_receiving_agent_conversation_replay: bool,
 ) -> bool {
     FeatureFlag::CloudModeSetupV2.is_enabled()
         && is_shared_ambient_agent_session
         && !is_receiving_agent_conversation_replay
-        && ((has_inserted_cloud_mode_user_query_block && is_first_exchange)
-            || has_optimistic_user_query)
+        && has_optimistic_user_query
 }
 
 #[cfg(test)]
@@ -182,39 +180,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_should_hide_ai_block_query_and_header_for_initial_cloud_prompt() {
+    fn test_should_hide_ai_block_query_and_header_for_optimistic_prompt() {
         let _flag = FeatureFlag::CloudModeSetupV2.override_enabled(true);
 
-        assert!(should_hide_ai_block_query_and_header(
-            true, false, true, true, false
-        ));
-    }
-
-    #[test]
-    fn test_should_hide_ai_block_query_and_header_for_optimistic_followup_prompt() {
-        let _flag = FeatureFlag::CloudModeSetupV2.override_enabled(true);
-
-        assert!(should_hide_ai_block_query_and_header(
-            false, true, true, false, false
-        ));
+        assert!(should_hide_ai_block_query_and_header(true, true, false));
     }
 
     #[test]
     fn test_should_not_hide_ai_block_query_and_header_during_replay() {
         let _flag = FeatureFlag::CloudModeSetupV2.override_enabled(true);
 
-        assert!(!should_hide_ai_block_query_and_header(
-            true, true, true, true, true
-        ));
+        assert!(!should_hide_ai_block_query_and_header(true, true, true));
     }
 
     #[test]
     fn test_should_not_hide_ai_block_query_and_header_for_untracked_prompt() {
         let _flag = FeatureFlag::CloudModeSetupV2.override_enabled(true);
 
-        assert!(!should_hide_ai_block_query_and_header(
-            false, false, true, false, false
-        ));
+        assert!(!should_hide_ai_block_query_and_header(false, true, false));
+    }
+
+    #[test]
+    fn test_should_not_hide_ai_block_query_and_header_outside_shared_session() {
+        let _flag = FeatureFlag::CloudModeSetupV2.override_enabled(true);
+
+        assert!(!should_hide_ai_block_query_and_header(true, false, false));
     }
 }
 
@@ -895,10 +885,6 @@ impl View for AIBlock {
                 terminal_model.is_receiving_agent_conversation_replay(),
             )
         };
-        let is_first_exchange = conversation
-            .first_exchange()
-            .is_some_and(|exchange| exchange.id == self.client_ids.client_exchange_id);
-
         let input_props = input::Props {
             comments: &self.comment_states,
             addressed_comment_ids: &addressed_comment_ids,
@@ -929,22 +915,15 @@ impl View for AIBlock {
             query_and_index
                 .as_ref()
                 .is_some_and(|(query_for_display, ..)| {
-                    let (has_inserted_cloud_mode_user_query_block, has_optimistic_user_query) =
-                        self.ambient_agent_view_model
-                            .as_ref()
-                            .map(|model| {
-                                let model = model.as_ref(app);
-                                (
-                                    model.has_inserted_cloud_mode_user_query_block(),
-                                    model.has_optimistic_user_query(query_for_display),
-                                )
-                            })
-                            .unwrap_or((false, false));
+                    let has_optimistic_user_query = self
+                        .ambient_agent_view_model
+                        .as_ref()
+                        .is_some_and(|model| {
+                            model.as_ref(app).has_optimistic_user_query(query_for_display)
+                        });
                     should_hide_ai_block_query_and_header(
-                        has_inserted_cloud_mode_user_query_block,
                         has_optimistic_user_query,
                         is_shared_ambient_agent_session,
-                        is_first_exchange,
                         is_receiving_agent_conversation_replay,
                     )
                 });
@@ -1093,6 +1072,14 @@ impl View for AIBlock {
         let is_conversation_transcript_viewer = terminal_model.is_conversation_transcript_viewer();
         drop(terminal_model);
 
+        let is_cloud_agent_pre_first_exchange =
+            crate::terminal::view::ambient_agent::is_cloud_agent_pre_first_exchange(
+                self.ambient_agent_view_model.as_ref(),
+                &self.agent_view_controller,
+                &self.terminal_model,
+                app,
+            );
+
         contents.add_child(output::render(
             output::Props {
                 model: self.model.as_ref(),
@@ -1159,6 +1146,7 @@ impl View for AIBlock {
                     .is_latest_non_passive_exchange_in_root_task(app)
                     && self.has_imported_comments_in_current_thread(app),
                 ask_user_question_view: self.ask_user_question_view.as_ref(),
+                is_cloud_agent_pre_first_exchange,
             },
             app,
         ));

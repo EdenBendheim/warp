@@ -4,10 +4,12 @@
 //!   filesystem path the local agent has touched, groups those paths into git
 //!   roots and orphan files, and exposes the env-overlap pick used by the
 //!   handoff pane bootstrap.
-//! - `orchestrator`: drives the prep + upload phases of the handoff off the main
-//!   thread. The actual cloud-agent spawn happens inside the handoff pane's
-//!   `AmbientAgentViewModel::submit_handoff` so the regular streaming spawn flow
-//!   (loading screen, shared-session join) is reused unchanged.
+//!
+//! The chip-click open path lives in `Workspace::start_local_to_cloud_handoff`
+//! and drives the prep-fork RPC + the async snapshot upload directly via
+//! `AIClient::prepare_handoff_fork` and `agent_sdk::driver::upload_snapshot_for_handoff`.
+//! The actual cloud-agent spawn happens inside the handoff pane's
+//! `AmbientAgentViewModel::submit_handoff`, which reads the cached
+//! `forked_conversation_id` and `snapshot_prep_token` off `PendingHandoff`.
 
-pub(crate) mod orchestrator;
 pub(crate) mod touched_repos;

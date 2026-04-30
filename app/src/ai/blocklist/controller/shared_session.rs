@@ -112,6 +112,20 @@ impl BlocklistAIController {
         let existing_conversation_id =
             self.find_existing_conversation_by_server_token(&init_event.conversation_id, ctx);
         let conversation_id = existing_conversation_id
+            .inspect(|conversation_id| {
+                // The local conversation is bound to a cloud-side session, so the cloud agent
+                // is the source of truth for user inputs going forward. Mark it as a shared-
+                // session view so `apply_client_actions` reconstructs UserQuery / ActionResult
+                // inputs from the cloud agent's response messages — without this, the local
+                // exchange's inputs stay empty and the AI block has no user query to render.
+                // Idempotent for conversations that already have the flag set (e.g. regular
+                // cloud mode, where `start_new_conversation` set it at creation time);
+                // important for REMOTE-1519 local-to-cloud handoff, where the local fork
+                // started as a non-shared-session conversation.
+                history.update(ctx, |history, _| {
+                    history.set_viewing_shared_session_for_conversation(*conversation_id, true);
+                });
+            })
             .or_else(|| {
                 let selected_conversation_id = self
                     .context_model
@@ -150,9 +164,13 @@ impl BlocklistAIController {
                     h.start_new_conversation(terminal_view_id, false, true, ctx)
                 })
             });
-        if self
-            .should_skip_replayed_response_for_existing_conversation(existing_conversation_id, ctx)
-        {
+        let should_skip = self.should_skip_replayed_response_for_existing_conversation(
+            existing_conversation_id,
+            &init_event.request_id,
+            ctx,
+        );
+        log::info!("[DEBUG] on_shared_init view_id={:?} req_id={} init_conv={} existing_conv={:?} resolved_conv={:?} was_existing={} skip={}", self.terminal_view_id, init_event.request_id, init_event.conversation_id, existing_conversation_id, conversation_id, existing_conversation_id.is_some(), should_skip);
+        if should_skip {
             self.shared_session_state.current_response_id = Some(stream_id);
             self.shared_session_state
                 .should_skip_current_replayed_response = true;
@@ -162,12 +180,15 @@ impl BlocklistAIController {
         self.shared_session_state.current_response_id = Some(stream_id.clone());
 
         let Some(conversation) = history.as_ref(ctx).conversation(&conversation_id) else {
-            log::error!(
-                "Tried to initialize shared session stream for non-existent conversation  {conversation_id:?}"
-            );
+            log::error!("[DEBUG] on_shared_init conversation lookup MISSING for conversation_id={conversation_id:?}");
             return;
         };
         let task_id = conversation.get_root_task_id().clone();
+        let known_task_ids: Vec<String> = conversation
+            .all_tasks()
+            .map(|t| t.id().to_string())
+            .collect();
+        log::info!("[DEBUG] on_shared_init using root task_id={task_id:?} known_task_ids={known_task_ids:?}");
 
         // Ensure the action executor is in view-only mode for shared-session viewers.
         self.action_model.update(ctx, |action_model, _ctx| {
@@ -176,7 +197,8 @@ impl BlocklistAIController {
 
         // Eagerly create an exchange for this request (with empty inputs) and initialize output.
         history.update(ctx, |history_model, ctx| {
-            let _ = history_model.update_conversation_for_new_request_input(
+            let view_id = self.terminal_view_id;
+            if let Err(err) = history_model.update_conversation_for_new_request_input(
                 RequestInput::for_task(
                     vec![],
                     task_id,
@@ -189,7 +211,9 @@ impl BlocklistAIController {
                 stream_id.clone(),
                 self.terminal_view_id,
                 ctx,
-            );
+            ) {
+                log::info!("[DEBUG] update_conversation_for_new_request_input ERR view_id={view_id:?} conversation_id={conversation_id:?} err={err:?}");
+            }
 
             history_model.initialize_output_for_response_stream(
                 &stream_id,
@@ -220,22 +244,45 @@ impl BlocklistAIController {
     fn should_skip_replayed_response_for_existing_conversation(
         &self,
         existing_conversation_id: Option<AIConversationId>,
+        init_request_id: &str,
         ctx: &mut ModelContext<Self>,
     ) -> bool {
         let Some(conversation_id) = existing_conversation_id else {
             return false;
         };
         let model = self.terminal_model.lock();
-        if !model.is_receiving_agent_conversation_replay()
-            || !model.should_suppress_existing_agent_conversation_replay()
-        {
+        let is_receiving_replay = model.is_receiving_agent_conversation_replay();
+        let should_suppress = model.should_suppress_existing_agent_conversation_replay();
+        if !is_receiving_replay || !should_suppress {
             return false;
         }
         drop(model);
 
-        BlocklistAIHistoryModel::as_ref(ctx)
+        // Only skip the replayed response stream when we already have a local
+        // exchange whose `server_output_id` matches its `request_id`. New
+        // exchanges that the cloud agent appended after the local fork (e.g.
+        // the user's first submitted prompt for a REMOTE-1519 local-to-cloud
+        // handoff pane) carry request_ids we have never seen and must flow
+        // through normally so the viewer's blocklist picks them up.
+        let history = BlocklistAIHistoryModel::as_ref(ctx);
+        let known_server_output_ids: Vec<String> = history
             .conversation(&conversation_id)
-            .is_some_and(|conversation| conversation.exchange_count() > 0)
+            .map(|conversation| {
+                conversation
+                    .all_exchanges()
+                    .into_iter()
+                    .filter_map(|exchange| {
+                        exchange
+                            .output_status
+                            .server_output_id()
+                            .map(|sid| sid.to_string())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        known_server_output_ids
+            .iter()
+            .any(|sid| sid == init_request_id)
     }
 
     fn on_shared_client_actions(
@@ -247,6 +294,7 @@ impl BlocklistAIController {
             .shared_session_state
             .should_skip_current_replayed_response
         {
+            log::info!("[DEBUG] on_shared_client_actions SKIPPED (suppressed replay) view_id={:?} action_count={}", self.terminal_view_id, actions.actions.len());
             return;
         }
         let Some(stream_id) = self.shared_session_state.current_response_id.clone() else {
@@ -360,11 +408,13 @@ impl BlocklistAIController {
             .shared_session_state
             .should_skip_current_replayed_response
         {
+            log::info!("[DEBUG] on_shared_finished SKIPPED (suppressed replay) view_id={:?}", self.terminal_view_id);
             self.shared_session_state.current_response_id.take();
             self.shared_session_state
                 .should_skip_current_replayed_response = false;
             return;
         }
+        log::info!("[DEBUG] on_shared_finished view_id={:?} current_response_id={:?}", self.terminal_view_id, self.shared_session_state.current_response_id);
         let Some(stream_id) = self.shared_session_state.current_response_id.take() else {
             log::warn!("Shared Finished missing request_id");
             return;

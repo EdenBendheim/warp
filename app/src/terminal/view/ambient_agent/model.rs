@@ -9,7 +9,6 @@ use warpui::r#async::{SpawnedFutureHandle, Timer};
 use warpui::{AppContext, Entity, EntityId, ModelContext, SingletonEntity};
 
 use crate::ai::active_agent_views_model::ActiveAgentViewsModel;
-use crate::ai::agent::api::ServerConversationToken;
 use crate::ai::agent::{conversation::AIConversationId, extract_user_query_mode};
 use crate::ai::ambient_agents::spawn::{spawn_task, submit_run_followup, AmbientAgentEvent};
 use crate::ai::ambient_agents::task::HarnessConfig;
@@ -18,7 +17,6 @@ use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::ambient_agents::{
     OUT_OF_CREDITS_TASK_FAILURE_MESSAGE, SERVER_OVERLOADED_TASK_FAILURE_MESSAGE,
 };
-use crate::ai::blocklist::handoff::orchestrator::run_handoff;
 use crate::ai::blocklist::handoff::touched_repos::TouchedWorkspace;
 use crate::ai::blocklist::BlocklistAIHistoryModel;
 use crate::ai::cloud_environments::CloudAmbientAgentEnvironment;
@@ -87,11 +85,18 @@ pub enum HandoffSubmissionState {
 /// `is_local_to_cloud_handoff()`.
 #[derive(Debug, Clone)]
 pub(crate) struct PendingHandoff {
-    /// Source conversation id (the local conversation's `server_conversation_token`).
-    pub(crate) source_conversation_id: ServerConversationToken,
-    /// `None` until `derive_touched_workspace` completes.
+    /// Forked conversation id minted by `POST /agent/handoff/prepare-fork` at
+    /// chip-click time. Sent under `conversation_id` (resume semantics) on the
+    /// subsequent `POST /agent/runs` request so the new task picks up the fork.
+    pub(crate) forked_conversation_id: String,
+    /// `None` until `derive_touched_workspace` completes (REMOTE-1486).
     pub(crate) touched_workspace: Option<TouchedWorkspace>,
-    /// Gates submit — prevents double-submitting while the orchestrator is in flight.
+    /// Snapshot upload outcome: `None` while the upload is in flight or never
+    /// started; `Some(Some(token))` once minted (the standard case);
+    /// `Some(None)` when the workspace was empty so no upload happened.
+    /// `submit_handoff` requires this to be `Some(_)` before spawning.
+    pub(crate) snapshot_prep_token: Option<Option<String>>,
+    /// Gates submit — prevents double-submitting while the spawn is in flight.
     pub(crate) submission_state: HandoffSubmissionState,
 }
 
@@ -159,8 +164,6 @@ pub struct AmbientAgentViewModel {
     /// Selected worker host for the cloud agent run. Populated from the HostSelector
     /// (which resolves env var > workspace setting) and read by `spawn_agent`.
     worker_host: Option<String>,
-    /// Whether the optimistic InitialUserQuery block has been inserted for the current run.
-    has_inserted_cloud_mode_user_query_block: bool,
     /// Whether the harness CLI (e.g. `claude`, `gemini`) has started running for a non-oz run.
     /// Used to transition the cloud-mode setup UI out of the pre-first-exchange phase when
     /// there is no oz `AppendedExchange` to key off of.
@@ -204,7 +207,6 @@ impl AmbientAgentViewModel {
             conversation_id: None,
             harness: Harness::default(),
             worker_host: None,
-            has_inserted_cloud_mode_user_query_block: false,
             harness_command_started: false,
             optimistically_rendered_user_queries: vec![],
             active_execution_session_id: None,
@@ -392,6 +394,23 @@ impl AmbientAgentViewModel {
         ctx.emit(AmbientAgentViewModelEvent::PendingHandoffChanged);
     }
 
+    /// Records the outcome of the chip-click async snapshot upload on the pending
+    /// handoff so `submit_handoff` can read the prep token without re-running
+    /// the upload. `Some(token)` is the standard success case; `None` means the
+    /// touched workspace was empty (no upload happened, no rehydration needed).
+    /// No-op when no handoff context is set.
+    pub(crate) fn set_pending_handoff_snapshot_prep_token(
+        &mut self,
+        prep_token: Option<String>,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        let Some(handoff) = self.pending_handoff.as_mut() else {
+            return;
+        };
+        handoff.snapshot_prep_token = Some(prep_token);
+        ctx.emit(AmbientAgentViewModelEvent::PendingHandoffChanged);
+    }
+
     /// Whether the harness CLI has started running. Only meaningful for non-oz runs.
     pub(super) fn harness_command_started(&self) -> bool {
         self.harness_command_started
@@ -436,14 +455,6 @@ impl AmbientAgentViewModel {
     /// Returns the task ID for the current cloud agent task, if one has been spawned.
     pub fn task_id(&self) -> Option<AmbientAgentTaskId> {
         self.task_id
-    }
-
-    pub fn has_inserted_cloud_mode_user_query_block(&self) -> bool {
-        self.has_inserted_cloud_mode_user_query_block
-    }
-
-    pub fn set_has_inserted_cloud_mode_user_query_block(&mut self, has_inserted: bool) {
-        self.has_inserted_cloud_mode_user_query_block = has_inserted;
     }
 
     pub fn record_optimistic_user_query(&mut self, prompt: String) {
@@ -666,7 +677,6 @@ impl AmbientAgentViewModel {
         self.environment_id = None;
         self.task_id = None;
         self.conversation_id = None;
-        self.has_inserted_cloud_mode_user_query_block = false;
         self.harness_command_started = false;
         self.optimistically_rendered_user_queries.clear();
         self.active_execution_session_id = None;
@@ -734,7 +744,7 @@ impl AmbientAgentViewModel {
             parent_run_id: None,
             runtime_skills: vec![],
             referenced_attachments: vec![],
-            fork_from_conversation_id: None,
+            conversation_id: None,
             handoff_prep_token: None,
         };
 
@@ -1132,11 +1142,10 @@ impl AmbientAgentViewModel {
     /// Drive the local-to-cloud handoff submission for this pane.
     ///
     /// Called by the cloud-mode submit dispatch when the pane has `pending_handoff`
-    /// set. Runs the orchestrator off the main thread; on success, builds a
-    /// `SpawnAgentRequest` with `fork_from_conversation_id` + `handoff_prep_token`
-    /// set and routes it through the same `spawn_agent_with_request` path that
-    /// regular cloud-mode runs use — so `WaitingForSession` → `SessionStarted`
-    /// streaming reaches the same pane unchanged.
+    /// set. The fork (REMOTE-1519) and snapshot upload (REMOTE-1486) both happen
+    /// at chip-click time — this method just reads the cached `forked_conversation_id`
+    /// and `snapshot_prep_token` off the pending handoff and routes through the
+    /// same `spawn_agent_with_request` path that regular cloud-mode runs use.
     pub(crate) fn submit_handoff(
         &mut self,
         prompt: String,
@@ -1148,73 +1157,45 @@ impl AmbientAgentViewModel {
             return;
         };
         if matches!(handoff.submission_state, HandoffSubmissionState::Starting) {
-            // Double-submit guard: orchestrator already in flight.
+            // Double-submit guard: spawn already in flight.
             return;
         }
-        let Some(workspace) = handoff.touched_workspace.clone() else {
+        if handoff.touched_workspace.is_none() {
             log::warn!("submit_handoff called before touched-workspace derivation completed");
             return;
+        }
+        let Some(prep_token) = handoff.snapshot_prep_token.clone() else {
+            log::warn!("submit_handoff called before snapshot upload completed");
+            return;
         };
-        let source_conversation_id = handoff.source_conversation_id.clone();
+        let forked_conversation_id = handoff.forked_conversation_id.clone();
         handoff.submission_state = HandoffSubmissionState::Starting;
         ctx.emit(AmbientAgentViewModelEvent::PendingHandoffChanged);
 
-        let server_api_provider = ServerApiProvider::as_ref(ctx);
-        let ai_client = server_api_provider.get_ai_client();
-        let http = server_api_provider.get_http_client();
-
-        // Clone the prompt so the failure path can hand it back to the input
-        // layer for restoration. The orchestrator future consumes the original.
-        let prompt_for_retry = prompt.clone();
-
-        ctx.spawn(
-            async move {
-                run_handoff(source_conversation_id, workspace, prompt, ai_client, http).await
-            },
-            move |me, result, ctx| match result {
-                Ok(prepared) => {
-                    // Build the spawn config from the model so the env selector chip's
-                    // pick (and `WARP_CLOUD_MODE_DEFAULT_HOST` / model / harness defaults)
-                    // propagate into the spawn request.
-                    let config = Some(me.build_default_spawn_config(ctx));
-                    // Strip any `/plan` / `/orchestrate` prefix from the prompt and surface
-                    // it as the request's `mode` so the cloud agent honors the same modes
-                    // the local-mode spawn path does.
-                    let (prompt, mode) = extract_user_query_mode(prepared.prompt);
-                    let request = SpawnAgentRequest {
-                        prompt,
-                        mode,
-                        config,
-                        title: None,
-                        team: None,
-                        skill: None,
-                        attachments,
-                        interactive: None,
-                        parent_run_id: None,
-                        runtime_skills: vec![],
-                        referenced_attachments: vec![],
-                        fork_from_conversation_id: Some(prepared.fork_from_conversation_id),
-                        handoff_prep_token: prepared.prep_token,
-                    };
-                    me.spawn_agent_with_request(request, ctx);
-                }
-                Err(err) => {
-                    let error_message = format!("{err}");
-                    log::warn!("Handoff prep+upload failed: {err:#}");
-                    me.set_pending_handoff_submission_state(
-                        HandoffSubmissionState::Failed(error_message.clone()),
-                        ctx,
-                    );
-                    // Emit the prompt back so the input layer can repopulate the
-                    // editor and surface the error — otherwise the user is left
-                    // staring at a blank composing pane with no retry path.
-                    ctx.emit(AmbientAgentViewModelEvent::HandoffSubmissionFailed {
-                        prompt: prompt_for_retry,
-                        error_message,
-                    });
-                }
-            },
-        );
+        // Build the spawn config from the model so the env selector chip's
+        // pick (and `WARP_CLOUD_MODE_DEFAULT_HOST` / model / harness defaults)
+        // propagate into the spawn request.
+        let config = Some(self.build_default_spawn_config(ctx));
+        // Strip any `/plan` / `/orchestrate` prefix from the prompt and surface
+        // it as the request's `mode` so the cloud agent honors the same modes
+        // the local-mode spawn path does.
+        let (prompt, mode) = extract_user_query_mode(prompt);
+        let request = SpawnAgentRequest {
+            prompt,
+            mode,
+            config,
+            title: None,
+            team: None,
+            skill: None,
+            attachments,
+            interactive: None,
+            parent_run_id: None,
+            runtime_skills: vec![],
+            referenced_attachments: vec![],
+            conversation_id: Some(forked_conversation_id),
+            handoff_prep_token: prep_token,
+        };
+        self.spawn_agent_with_request(request, ctx);
     }
 
     /// Cancels the ambient agent task if one is currently running.

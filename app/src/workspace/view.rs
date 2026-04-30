@@ -110,6 +110,8 @@ use crate::util::openable_file_type::FileTarget;
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::{resolve_file_target_with_editor_choice, EditorLayout};
 
+use crate::ai::agent::conversation::AIConversation;
+use crate::ai::agent_sdk::driver::upload_snapshot_for_handoff;
 use crate::ai::blocklist::agent_view::agent_input_footer::sort_environments_by_recency;
 use crate::ai::blocklist::handoff::touched_repos::{
     derive_touched_workspace, extract_paths_from_conversation, pick_handoff_overlap_env,
@@ -117,6 +119,7 @@ use crate::ai::blocklist::handoff::touched_repos::{
 use crate::ai::blocklist::history_model::CloudConversationData;
 use crate::ai::blocklist::FORK_PREFIX;
 use crate::ai::cloud_environments::CloudAmbientAgentEnvironment;
+use crate::server::server_api::ai::PrepareHandoffForkRequest;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::cli_agent_sessions::plugin_manager::{plugin_manager_for, PluginModalKind};
 use crate::terminal::cli_agent_sessions::{CLIAgentSessionsModel, CLIAgentSessionsModelEvent};
@@ -11600,7 +11603,12 @@ impl Workspace {
                         ctx,
                     )
                 } else {
-                    history_model.fork_conversation(&source_conversation, FORK_PREFIX, ctx)
+                    history_model.fork_conversation(
+                        &source_conversation,
+                        FORK_PREFIX,
+                        false, /* preserve_task_ids */
+                        ctx,
+                    )
                 }
             });
 
@@ -12980,15 +12988,18 @@ impl Workspace {
 
     /// Open a local-to-cloud handoff pane next to the active local pane. Triggered
     /// by the `/oz-cloud-handoff` slash command and the "Hand off to cloud" footer
-    /// chip.
+    /// chip (REMOTE-1486 / REMOTE-1519).
     ///
-    /// Resolves the active conversation up front. If there's an eligible source
-    /// conversation (active, non-empty, has a `server_conversation_token`), splits a
-    /// fresh cloud-mode pane to the right and seeds it with handoff context so the
-    /// submit path routes through the orchestrator. Otherwise, still splits a fresh
-    /// cloud-mode pane (no handoff context) so the chip is always-clickable per the
-    /// existing posture — there's nothing meaningful to hand off in that state, but
-    /// the user clearly wanted a cloud-mode pane.
+    /// When the active conversation is non-empty and has a server token, mints a
+    /// server-side fork via `POST /agent/handoff/prepare-fork`, then splits a fresh
+    /// cloud-mode pane next to the local pane and pre-populates it with the forked
+    /// conversation.
+    ///
+    /// All failure modes — ineligibility (no active conversation, empty, or no
+    /// synced server token), prepare-fork RPC failure, and local fork
+    /// materialization failure — surface an error toast in the local window and
+    /// **do not open** any pane. The local conversation is unaffected and the
+    /// user can retry by re-clicking the chip.
     fn start_local_to_cloud_handoff(
         &mut self,
         initial_prompt: Option<String>,
@@ -13019,10 +13030,94 @@ impl Workspace {
                     })
             });
 
-        // Split a fresh cloud-mode pane to the right of the active pane. Mirrors
-        // `Workspace::open_network_log_pane`'s pattern but uses `add_ambient_agent_pane`
-        // so the new pane is wired up as a cloud-mode terminal (with the right pre-
-        // session shared-session viewer manager).
+        let Some((source_conversation, source_token)) = source else {
+            // Not eligible: surface an error toast and bail out. We deliberately
+            // do not open a fresh cloud-mode pane here — the chip is a
+            // hand-off-this-conversation action, and silently opening an
+            // unrelated fresh pane hides the failure from the user.
+            self.show_handoff_error_toast(ctx);
+            return;
+        };
+
+        // Eligible: kick off the prepare-fork RPC. The pane is **not** opened
+        // until the fork resolves, so a failed fork doesn't leave a stranded
+        // empty pane on screen.
+        let ai_client = ServerApiProvider::as_ref(ctx).get_ai_client();
+        let request = PrepareHandoffForkRequest {
+            source_conversation_id: source_token.as_str().to_string(),
+        };
+        ctx.spawn(
+            async move { ai_client.prepare_handoff_fork(request).await },
+            move |me, result, ctx| match result {
+                Ok(response) => {
+                    me.complete_local_to_cloud_handoff_open(
+                        source_conversation,
+                        source_token,
+                        response.forked_conversation_id,
+                        initial_prompt,
+                        ctx,
+                    );
+                }
+                Err(err) => {
+                    log::warn!("prepare_handoff_fork failed: {err:#}");
+                    me.show_handoff_error_toast(ctx);
+                }
+            },
+        );
+    }
+
+    /// Surface the shared "Failed to prepare handoff" toast in the local
+    /// window. Used by every failure path in `start_local_to_cloud_handoff`
+    /// (ineligibility, prepare-fork RPC failure, local fork materialization
+    /// failure) so the user sees a single consistent error treatment.
+    fn show_handoff_error_toast(&self, ctx: &mut ViewContext<Self>) {
+        let window_id = ctx.window_id();
+        WorkspaceToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+            let toast = DismissibleToast::error(
+                "Failed to prepare handoff. Please try again.".to_owned(),
+            );
+            toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+        });
+    }
+
+    /// Finishes the local-to-cloud handoff open after the prepare-fork RPC
+    /// returns. Materializes a local fork bound to the server's forked
+    /// conversation id, splits a fresh cloud-mode pane next to the active
+    /// pane, restores the forked conversation into it, seeds `PendingHandoff`,
+    /// and kicks off async derivation + snapshot upload (REMOTE-1486).
+    fn complete_local_to_cloud_handoff_open(
+        &mut self,
+        source_conversation: AIConversation,
+        source_token: ServerConversationToken,
+        forked_conversation_id: String,
+        initial_prompt: Option<String>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        // Materialize the local fork up-front so the new pane has something to
+        // restore. `fork_conversation` already handles SQLite persistence and
+        // copies tasks / messages over from the source.
+        let history_model = BlocklistAIHistoryModel::handle(ctx);
+        let local_fork = match history_model.update(ctx, |history_model, ctx| {
+            // Preserve source task ids so the local fork's task store matches the cloud-side
+            // fork (which is a byte copy of the source's GCS data). The cloud agent's
+            // ClientActions reference these task ids and must resolve locally.
+            history_model.fork_conversation(
+                &source_conversation,
+                FORK_PREFIX,
+                true, /* preserve_task_ids */
+                ctx,
+            )
+        }) {
+            Ok(forked) => forked,
+            Err(err) => {
+                log::warn!("Failed to materialize local fork for handoff: {err:#}");
+                self.show_handoff_error_toast(ctx);
+                return;
+            }
+        };
+        let local_fork_id = local_fork.id();
+
+        // Split the new cloud-mode pane next to the active pane.
         self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
             pane_group.add_ambient_agent_pane(ctx);
         });
@@ -13036,7 +13131,6 @@ impl Workspace {
             );
             return;
         };
-
         let Some(model_handle) = new_pane_view
             .as_ref(ctx)
             .ambient_agent_view_model()
@@ -13046,9 +13140,7 @@ impl Workspace {
             return;
         };
 
-        // `add_ambient_agent_pane` already entered cloud agent view via
-        // `enter_ambient_agent_setup` (which transitions the model into `Composing` /
-        // `Setup`). Pre-fill the prompt input from the slash command argument, if any.
+        // Pre-fill the prompt input if the slash command supplied one.
         if let Some(prompt) = initial_prompt.as_deref().filter(|p| !p.is_empty()) {
             new_pane_view.update(ctx, |terminal_view, view_ctx| {
                 terminal_view.input().update(view_ctx, |input, input_ctx| {
@@ -13057,41 +13149,77 @@ impl Workspace {
             });
         }
 
-        // Fall through to a fresh cloud-mode pane (no handoff context) when there's
-        // nothing meaningful to hand off. The pane was already opened above.
-        let Some((conversation, source_token)) = source else {
-            return;
-        };
+        // Restore the forked conversation into the new pane so its AI exchanges
+        // are visible immediately. Mirrors the `/fork` in-current-pane flow at
+        // `Self::fork_ai_conversation`.
+        let local_fork_for_restore = local_fork.clone();
+        new_pane_view.update(ctx, |terminal_view, view_ctx| {
+            terminal_view.restore_conversation_after_view_creation(
+                RestoredAIConversation::new(local_fork_for_restore),
+                /* use_live_appearance */ true,
+                view_ctx,
+            );
+        });
 
-        // Seed the handoff context onto the new pane's `AmbientAgentViewModel` so
-        // `is_local_to_cloud_handoff()` is true from this point on (the V2 input
-        // is suppressed and the submit path routes through the orchestrator).
+        // Bind the local fork's `server_conversation_token` to the forked
+        // conversation id minted by the server. Must run AFTER
+        // `restore_conversation_after_view_creation`, since `restore_conversations`
+        // overwrites the entry in `conversations_by_id` with the (token-less)
+        // clone we hand it. Binding here ensures that when the cloud agent's
+        // shared session connects with `StreamInit { conversation_id: T_C }`,
+        // `find_existing_conversation_by_server_token` finds the live fork and
+        // `should_skip_replayed_response_for_existing_conversation` correctly
+        // suppresses the replayed response stream — otherwise the replay would
+        // re-enter as new exchanges, flipping `is_executing_oz_environment_startup_commands`
+        // false and breaking setup-command block UI for the handoff pane.
+        history_model.update(ctx, |history_model, _| {
+            history_model.set_server_conversation_token_for_conversation(
+                local_fork_id,
+                forked_conversation_id.clone(),
+            );
+        });
+
+        // Seed `PendingHandoff` so `is_local_to_cloud_handoff()` is true from
+        // here on. `submit_handoff` reads the cached `forked_conversation_id`
+        // and `snapshot_prep_token` directly from this struct — the orchestrator
+        // path that REMOTE-1486 used has been inlined into the async block below.
         let pending = PendingHandoff {
-            source_conversation_id: source_token,
+            forked_conversation_id: forked_conversation_id.clone(),
             touched_workspace: None,
+            snapshot_prep_token: None,
             submission_state: HandoffSubmissionState::Idle,
         };
         model_handle.update(ctx, |model, model_ctx| {
             model.set_pending_handoff(Some(pending), model_ctx);
         });
 
-        // Kick off touched-repo derivation off the main thread. The conversation
-        // walk lives inside the spawned future too so we don't pay it on chip click
-        // (long conversations have hundreds of action results to traverse). When
-        // derivation completes, apply the repo-aware overlap pick on top of
-        // whatever `ensure_default_selection` already picked, but only if the pane
-        // is still in handoff mode — the pane could have been closed in the
-        // interim. On a real overlap match we override unconditionally so the
-        // user's last-selected (potentially empty) env doesn't shadow a matching
-        // env; on no-overlap we leave the existing selection alone, since the env
-        // selector's recency-based default is the best fallback.
+        // Kick off async background prep: derive the touched workspace, then
+        // upload the snapshot. The pane is fully interactive throughout — the
+        // user can scroll, type, and pick an env while this runs. The send
+        // button gate inside `submit_handoff` waits for both the workspace and
+        // the prep token to be cached before allowing a spawn.
         let async_model_handle = model_handle.clone();
+        let server_api_provider = ServerApiProvider::as_ref(ctx);
+        let ai_client = server_api_provider.get_ai_client();
+        let http = server_api_provider.get_http_client();
+        let log_token = source_token.clone();
         ctx.spawn(
             async move {
-                let paths = extract_paths_from_conversation(&conversation);
-                derive_touched_workspace(paths).await
+                let paths = extract_paths_from_conversation(&source_conversation);
+                let workspace = derive_touched_workspace(paths).await;
+                let repo_paths: Vec<_> =
+                    workspace.repos.iter().map(|r| r.git_root.clone()).collect();
+                let upload_result = upload_snapshot_for_handoff(
+                    repo_paths,
+                    workspace.orphan_files.clone(),
+                    ai_client,
+                    http.as_ref(),
+                    &log_token,
+                )
+                .await;
+                (workspace, upload_result)
             },
-            move |_workspace, derived_workspace, ctx| {
+            move |_workspace, (derived_workspace, upload_result), ctx| {
                 async_model_handle.update(ctx, |model, model_ctx| {
                     if !model.is_local_to_cloud_handoff() {
                         return;
@@ -13102,6 +13230,18 @@ impl Workspace {
                         model.set_environment_id(Some(overlap_env), model_ctx);
                     }
                     model.set_pending_handoff_workspace(derived_workspace, model_ctx);
+                    match upload_result {
+                        Ok(prep_token) => {
+                            model.set_pending_handoff_snapshot_prep_token(prep_token, model_ctx);
+                        }
+                        Err(err) => {
+                            log::warn!("Handoff snapshot upload failed: {err:#}");
+                            model.set_pending_handoff_submission_state(
+                                HandoffSubmissionState::Failed(format!("{err}")),
+                                model_ctx,
+                            );
+                        }
+                    }
                 });
             },
         );
