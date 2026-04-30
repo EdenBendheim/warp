@@ -5097,8 +5097,6 @@ impl TerminalView {
                 response_stream_id,
                 ..
             } => {
-                let agent_view_active_conv = self.agent_view_controller.as_ref(ctx).agent_view_state().active_conversation_id();
-                log::info!("[DEBUG] AppendedExchange view_id={:?} exchange_id={exchange_id:?} task_id={task_id:?} conversation_id={conversation_id:?} is_hidden={is_hidden} agent_view_active_conv={agent_view_active_conv:?} response_stream_id={response_stream_id:?}", self.view_id);
                 // Hide telemetry banner forever after first AI input user sends.
                 if FeatureFlag::GlobalAIAnalyticsBanner.is_enabled()
                     && !GeneralSettings::as_ref(ctx)

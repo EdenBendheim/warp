@@ -1205,6 +1205,14 @@ impl AIBlock {
             ctx.subscribe_to_model(&agent_view_controller, |_, _, _, ctx| ctx.notify());
         }
 
+        // Re-render when the cloud agent transitions through setup phases so the response
+        // footer (thumbs up/down, fork, credits) toggles correctly with `is_cloud_agent_pre_first_exchange`.
+        // Without this, the prior exchange's footer remains visible during a follow-up's
+        // "Step n/3" loading until something else triggers a redraw.
+        if let Some(ambient_agent_view_model) = ambient_agent_view_model.as_ref() {
+            ctx.subscribe_to_model(ambient_agent_view_model, |_, _, _, ctx| ctx.notify());
+        }
+
         ctx.subscribe_to_model(&context_model, |_, _, event, ctx| {
             if let BlocklistAIContextEvent::UpdatedPendingContext { .. } = event {
                 ctx.notify();

@@ -164,13 +164,11 @@ impl BlocklistAIController {
                     h.start_new_conversation(terminal_view_id, false, true, ctx)
                 })
             });
-        let should_skip = self.should_skip_replayed_response_for_existing_conversation(
+        if self.should_skip_replayed_response_for_existing_conversation(
             existing_conversation_id,
             &init_event.request_id,
             ctx,
-        );
-        log::info!("[DEBUG] on_shared_init view_id={:?} req_id={} init_conv={} existing_conv={:?} resolved_conv={:?} was_existing={} skip={}", self.terminal_view_id, init_event.request_id, init_event.conversation_id, existing_conversation_id, conversation_id, existing_conversation_id.is_some(), should_skip);
-        if should_skip {
+        ) {
             self.shared_session_state.current_response_id = Some(stream_id);
             self.shared_session_state
                 .should_skip_current_replayed_response = true;
@@ -180,15 +178,12 @@ impl BlocklistAIController {
         self.shared_session_state.current_response_id = Some(stream_id.clone());
 
         let Some(conversation) = history.as_ref(ctx).conversation(&conversation_id) else {
-            log::error!("[DEBUG] on_shared_init conversation lookup MISSING for conversation_id={conversation_id:?}");
+            log::error!(
+                "Tried to initialize shared session stream for non-existent conversation  {conversation_id:?}"
+            );
             return;
         };
         let task_id = conversation.get_root_task_id().clone();
-        let known_task_ids: Vec<String> = conversation
-            .all_tasks()
-            .map(|t| t.id().to_string())
-            .collect();
-        log::info!("[DEBUG] on_shared_init using root task_id={task_id:?} known_task_ids={known_task_ids:?}");
 
         // Ensure the action executor is in view-only mode for shared-session viewers.
         self.action_model.update(ctx, |action_model, _ctx| {
@@ -197,8 +192,7 @@ impl BlocklistAIController {
 
         // Eagerly create an exchange for this request (with empty inputs) and initialize output.
         history.update(ctx, |history_model, ctx| {
-            let view_id = self.terminal_view_id;
-            if let Err(err) = history_model.update_conversation_for_new_request_input(
+            let _ = history_model.update_conversation_for_new_request_input(
                 RequestInput::for_task(
                     vec![],
                     task_id,
@@ -211,9 +205,7 @@ impl BlocklistAIController {
                 stream_id.clone(),
                 self.terminal_view_id,
                 ctx,
-            ) {
-                log::info!("[DEBUG] update_conversation_for_new_request_input ERR view_id={view_id:?} conversation_id={conversation_id:?} err={err:?}");
-            }
+            );
 
             history_model.initialize_output_for_response_stream(
                 &stream_id,
@@ -294,7 +286,6 @@ impl BlocklistAIController {
             .shared_session_state
             .should_skip_current_replayed_response
         {
-            log::info!("[DEBUG] on_shared_client_actions SKIPPED (suppressed replay) view_id={:?} action_count={}", self.terminal_view_id, actions.actions.len());
             return;
         }
         let Some(stream_id) = self.shared_session_state.current_response_id.clone() else {
@@ -408,13 +399,11 @@ impl BlocklistAIController {
             .shared_session_state
             .should_skip_current_replayed_response
         {
-            log::info!("[DEBUG] on_shared_finished SKIPPED (suppressed replay) view_id={:?}", self.terminal_view_id);
             self.shared_session_state.current_response_id.take();
             self.shared_session_state
                 .should_skip_current_replayed_response = false;
             return;
         }
-        log::info!("[DEBUG] on_shared_finished view_id={:?} current_response_id={:?}", self.terminal_view_id, self.shared_session_state.current_response_id);
         let Some(stream_id) = self.shared_session_state.current_response_id.take() else {
             log::warn!("Shared Finished missing request_id");
             return;
