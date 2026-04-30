@@ -311,7 +311,10 @@ pub(crate) fn extract_paths_from_conversation(conversation: &AIConversation) -> 
             continue;
         };
         let output = output.get();
-        for message in &output.messages {
+        // Walk messages newest-first within the exchange too, so a single long
+        // exchange can't burn the budget on its oldest tool calls before
+        // reaching its most recent edits.
+        for message in output.messages.iter().rev() {
             let AIAgentOutputMessageType::Action(action) = &message.message else {
                 continue;
             };
