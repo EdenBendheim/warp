@@ -2876,6 +2876,17 @@ impl TerminalView {
             .is_some_and(|index| index > 0)
     }
 
+    /// True when this pane's cloud agent is in any pre-first-exchange phase.
+    /// Thin wrapper over the free function that threads `self`'s handles.
+    fn is_cloud_agent_pre_first_exchange(&self, app: &AppContext) -> bool {
+        is_cloud_agent_pre_first_exchange(
+            self.ambient_agent_view_model.as_ref(),
+            &self.agent_view_controller,
+            &self.model,
+            app,
+        )
+    }
+
     pub fn create_sync_event_based_on_terminal_state(&self, app_ctx: &AppContext) -> SyncEvent {
         if !matches!(
             self.model.lock().terminal_input_state(),
@@ -6880,12 +6891,7 @@ impl TerminalView {
         // agent exchange arrives, we hide the interactive input view. A non-interactive footer is
         // rendered instead (see `TerminalView::render`).
         if !FeatureFlag::CloudModeSetupV2.is_enabled()
-            && is_cloud_agent_pre_first_exchange(
-                self.ambient_agent_view_model.as_ref(),
-                &self.agent_view_controller,
-                &self.model,
-                app,
-            )
+            && self.is_cloud_agent_pre_first_exchange(app)
         {
             return false;
         }
@@ -25728,14 +25734,7 @@ impl View for TerminalView {
 
                     if self.is_input_box_visible(&model, app) {
                         column.add_child(self.render_input());
-                    } else if !model.is_read_only()
-                        && is_cloud_agent_pre_first_exchange(
-                            self.ambient_agent_view_model.as_ref(),
-                            &self.agent_view_controller,
-                            &self.model,
-                            app,
-                        )
-                    {
+                    } else if !model.is_read_only() && self.is_cloud_agent_pre_first_exchange(app) {
                         column.add_child(ambient_agent::render_loading_footer(appearance));
                     } else if self.show_remote_server_loading_footer(&model, app) {
                         column.add_child(

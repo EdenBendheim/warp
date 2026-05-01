@@ -31,9 +31,7 @@ use super::loading_screen::{
     render_cloud_mode_cancelled_screen, render_cloud_mode_error_screen,
     render_cloud_mode_github_auth_required_screen, render_cloud_mode_loading_screen,
 };
-use super::{
-    is_cloud_agent_pre_first_exchange, AmbientAgentEntryBlock, AmbientAgentViewModelEvent,
-};
+use super::{AmbientAgentEntryBlock, AmbientAgentViewModelEvent};
 use crate::terminal::view::Event as TerminalViewEvent;
 const CHILD_AGENT_GITHUB_AUTH_REQUIRED_BLOCKED_ACTION: &str =
     "GitHub authentication required before starting the child agent.";
@@ -364,15 +362,11 @@ impl TerminalView {
                 ctx.notify();
             }
             AmbientAgentViewModelEvent::PendingHandoffChanged => {
-                // REMOTE-1486: re-render so the handoff banner picks up the new
-                // touched-workspace data, submission state, or pending-handoff
-                // teardown.
                 ctx.notify();
             }
-            AmbientAgentViewModelEvent::HandoffSubmissionFailed { .. } => {
-                // The user-visible toast is handled by `Input`'s subscription
-                // to the same event; nothing for the terminal view to do here
-                // beyond the implicit re-render.
+            AmbientAgentViewModelEvent::HandoffPrepFailed { .. } => {
+                // The toast is surfaced by `Input`'s subscription; this just
+                // triggers a re-render of pane chrome.
                 ctx.notify();
             }
             AmbientAgentViewModelEvent::UpdatedSetupCommandVisibility => (),
@@ -392,12 +386,7 @@ impl TerminalView {
             return;
         };
 
-        if !is_cloud_agent_pre_first_exchange(
-            self.ambient_agent_view_model.as_ref(),
-            &self.agent_view_controller,
-            &self.model,
-            ctx,
-        ) {
+        if !self.is_cloud_agent_pre_first_exchange(ctx) {
             return;
         }
 
@@ -432,7 +421,7 @@ impl TerminalView {
                     .set_did_execute_a_setup_command(true);
             });
 
-        let setup_command_text = ctx.add_typed_action_view(|ctx| {
+            let setup_command_text = ctx.add_typed_action_view(|ctx| {
                 super::CloudModeSetupTextBlock::new(
                     ambient_agent_view_model.clone(),
                     self.agent_view_controller.clone(),

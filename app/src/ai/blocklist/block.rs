@@ -46,7 +46,7 @@ use crate::code_review::comment_rendering::{CommentViewCard, HeaderClickHandler}
 use crate::terminal::model::BlockId;
 use crate::terminal::model_events::ModelEvent;
 use crate::terminal::model_events::ModelEventDispatcher;
-use crate::terminal::view::ambient_agent::AmbientAgentViewModel;
+use crate::terminal::view::ambient_agent::{AmbientAgentViewModel, AmbientAgentViewModelEvent};
 use crate::terminal::TerminalModel;
 use crate::view_components::action_button::{
     ActionButtonTheme, NakedTheme, PrimaryTheme, SecondaryTheme,
@@ -1206,11 +1206,24 @@ impl AIBlock {
         }
 
         // Re-render when the cloud agent transitions through setup phases so the response
-        // footer (thumbs up/down, fork, credits) toggles correctly with `is_cloud_agent_pre_first_exchange`.
-        // Without this, the prior exchange's footer remains visible during a follow-up's
-        // "Step n/3" loading until something else triggers a redraw.
+        // footer toggles correctly with `is_cloud_agent_pre_first_exchange`. Each event below
+        // toggles that helper's output.
         if let Some(ambient_agent_view_model) = ambient_agent_view_model.as_ref() {
-            ctx.subscribe_to_model(ambient_agent_view_model, |_, _, _, ctx| ctx.notify());
+            ctx.subscribe_to_model(ambient_agent_view_model, |_, _, event, ctx| {
+                if matches!(
+                    event,
+                    AmbientAgentViewModelEvent::DispatchedAgent
+                        | AmbientAgentViewModelEvent::FollowupDispatched
+                        | AmbientAgentViewModelEvent::SessionReady { .. }
+                        | AmbientAgentViewModelEvent::FollowupSessionReady { .. }
+                        | AmbientAgentViewModelEvent::Failed { .. }
+                        | AmbientAgentViewModelEvent::Cancelled
+                        | AmbientAgentViewModelEvent::NeedsGithubAuth
+                        | AmbientAgentViewModelEvent::HarnessCommandStarted
+                ) {
+                    ctx.notify();
+                }
+            });
         }
 
         ctx.subscribe_to_model(&context_model, |_, _, event, ctx| {

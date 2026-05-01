@@ -27,6 +27,7 @@ use self::vertical_tabs::{
 pub(crate) use onboarding::OnboardingTutorial;
 
 use crate::ai::active_agent_views_model::ActiveAgentViewsModel;
+use crate::ai::agent::conversation::AIConversation;
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::agent_conversations_model::ConversationOrTask;
 use crate::ai::agent_management::notifications::toast_stack::AgentNotificationToastStack;
@@ -37,15 +38,22 @@ use crate::ai::agent_management::notifications::NotificationFilter;
 use crate::ai::agent_management::telemetry::AgentManagementTelemetryEvent;
 use crate::ai::agent_management::view::{AgentManagementView, AgentManagementViewEvent};
 use crate::ai::agent_management::AgentManagementEvent;
+use crate::ai::agent_sdk::driver::upload_snapshot_for_handoff;
 use crate::ai::ambient_agents::telemetry::{CloudAgentTelemetryEvent, CloudModeEntryPoint};
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::blocklist::agent_view::agent_input_footer::editor::AgentToolbarEditorMode;
+use crate::ai::blocklist::agent_view::agent_input_footer::sort_environments_by_recency;
 use crate::ai::blocklist::agent_view::AgentViewEntryOrigin;
-use crate::ai::blocklist::history_model::load_conversation_from_server;
+use crate::ai::blocklist::handoff::touched_repos::{
+    derive_touched_workspace, extract_paths_from_conversation, pick_handoff_overlap_env,
+};
+use crate::ai::blocklist::history_model::{load_conversation_from_server, CloudConversationData};
 use crate::ai::blocklist::suggested_agent_mode_workflow_modal::SuggestedAgentModeWorkflowAndId;
 use crate::ai::blocklist::suggested_rule_modal::{
     SuggestedRuleAndId, SuggestedRuleModal, SuggestedRuleModalEvent,
 };
+use crate::ai::blocklist::FORK_PREFIX;
+use crate::ai::cloud_environments::CloudAmbientAgentEnvironment;
 use crate::ai::conversation_utils;
 use crate::ai::document::ai_document_model::{AIDocumentId, AIDocumentModel};
 use crate::ai::llms::LLMPreferences;
@@ -110,16 +118,6 @@ use crate::util::openable_file_type::FileTarget;
 #[cfg(feature = "local_fs")]
 use crate::util::openable_file_type::{resolve_file_target_with_editor_choice, EditorLayout};
 
-use crate::ai::agent::conversation::AIConversation;
-use crate::ai::agent_sdk::driver::upload_snapshot_for_handoff;
-use crate::ai::blocklist::agent_view::agent_input_footer::sort_environments_by_recency;
-use crate::ai::blocklist::handoff::touched_repos::{
-    derive_touched_workspace, extract_paths_from_conversation, pick_handoff_overlap_env,
-};
-use crate::ai::blocklist::history_model::CloudConversationData;
-use crate::ai::blocklist::FORK_PREFIX;
-use crate::ai::cloud_environments::CloudAmbientAgentEnvironment;
-use crate::server::server_api::ai::PrepareHandoffForkRequest;
 #[cfg(not(target_family = "wasm"))]
 use crate::terminal::cli_agent_sessions::plugin_manager::{plugin_manager_for, PluginModalKind};
 use crate::terminal::cli_agent_sessions::{CLIAgentSessionsModel, CLIAgentSessionsModelEvent};
@@ -177,7 +175,7 @@ use crate::quit_warning::UnsavedStateSummary;
 use crate::search::command_palette::view::NavigationMode;
 use crate::search::slash_command_menu::static_commands::commands;
 use crate::server::network_log_pane_manager::NetworkLogPaneManager;
-use crate::server::server_api::ai::AIClient;
+use crate::server::server_api::ai::{AIClient, PrepareHandoffForkRequest};
 use crate::server::server_api::auth::AuthClient;
 use crate::settings::{
     AISettings, AISettingsChangedEvent, CodeSettings, CodeSettingsChangedEvent, CtrlTabBehavior,
@@ -318,7 +316,9 @@ use crate::terminal::session_settings::{
 };
 use crate::terminal::settings::{SpacingMode, TerminalSettings};
 use crate::terminal::shell::ShellType;
-use crate::terminal::view::ambient_agent::{HandoffSubmissionState, PendingHandoff};
+use crate::terminal::view::ambient_agent::{
+    HandoffSubmissionState, PendingHandoff, SnapshotPrepStatus,
+};
 #[cfg(feature = "local_tty")]
 use crate::terminal::view::docker_sandbox::DEFAULT_DOCKER_SANDBOX_BASE_IMAGE;
 use crate::terminal::{self, SizeInfo, TerminalView};
@@ -12988,18 +12988,16 @@ impl Workspace {
 
     /// Open a local-to-cloud handoff pane next to the active local pane. Triggered
     /// by the `/oz-cloud-handoff` slash command and the "Hand off to cloud" footer
-    /// chip (REMOTE-1486 / REMOTE-1519).
+    /// chip.
     ///
     /// When the active conversation is non-empty and has a server token, mints a
     /// server-side fork via `POST /agent/handoff/prepare-fork`, then splits a fresh
     /// cloud-mode pane next to the local pane and pre-populates it with the forked
     /// conversation.
     ///
-    /// All failure modes — ineligibility (no active conversation, empty, or no
-    /// synced server token), prepare-fork RPC failure, and local fork
-    /// materialization failure — surface an error toast in the local window and
-    /// **do not open** any pane. The local conversation is unaffected and the
-    /// user can retry by re-clicking the chip.
+    /// All failure modes — ineligibility, prepare-fork RPC failure, and local fork
+    /// materialization failure — surface an error toast and **do not open** any
+    /// pane. The local conversation is unaffected.
     fn start_local_to_cloud_handoff(
         &mut self,
         initial_prompt: Option<String>,
@@ -13009,8 +13007,6 @@ impl Workspace {
             return;
         }
 
-        // Resolve the source conversation (if any). The current active session view's
-        // active conversation drives the fork pointer and the touched-repo derivation.
         let source = self
             .active_tab_pane_group()
             .as_ref(ctx)
@@ -13031,17 +13027,18 @@ impl Workspace {
             });
 
         let Some((source_conversation, source_token)) = source else {
-            // Not eligible: surface an error toast and bail out. We deliberately
-            // do not open a fresh cloud-mode pane here — the chip is a
-            // hand-off-this-conversation action, and silently opening an
-            // unrelated fresh pane hides the failure from the user.
-            self.show_handoff_error_toast(ctx);
+            // Ineligible: don't open a fresh unrelated pane — the chip is a
+            // hand-off-this-conversation action.
+            let window_id = ctx.window_id();
+            WorkspaceToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                let toast = DismissibleToast::error(
+                    "Failed to prepare handoff. Please try again.".to_owned(),
+                );
+                toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+            });
             return;
         };
 
-        // Eligible: kick off the prepare-fork RPC. The pane is **not** opened
-        // until the fork resolves, so a failed fork doesn't leave a stranded
-        // empty pane on screen.
         let ai_client = ServerApiProvider::as_ref(ctx).get_ai_client();
         let request = PrepareHandoffForkRequest {
             source_conversation_id: source_token.as_str().to_string(),
@@ -13060,31 +13057,22 @@ impl Workspace {
                 }
                 Err(err) => {
                     log::warn!("prepare_handoff_fork failed: {err:#}");
-                    me.show_handoff_error_toast(ctx);
+                    let window_id = ctx.window_id();
+                    WorkspaceToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                        let toast = DismissibleToast::error(
+                            "Failed to prepare handoff. Please try again.".to_owned(),
+                        );
+                        toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                    });
                 }
             },
         );
     }
 
-    /// Surface the shared "Failed to prepare handoff" toast in the local
-    /// window. Used by every failure path in `start_local_to_cloud_handoff`
-    /// (ineligibility, prepare-fork RPC failure, local fork materialization
-    /// failure) so the user sees a single consistent error treatment.
-    fn show_handoff_error_toast(&self, ctx: &mut ViewContext<Self>) {
-        let window_id = ctx.window_id();
-        WorkspaceToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
-            let toast = DismissibleToast::error(
-                "Failed to prepare handoff. Please try again.".to_owned(),
-            );
-            toast_stack.add_ephemeral_toast(toast, window_id, ctx);
-        });
-    }
-
-    /// Finishes the local-to-cloud handoff open after the prepare-fork RPC
-    /// returns. Materializes a local fork bound to the server's forked
-    /// conversation id, splits a fresh cloud-mode pane next to the active
-    /// pane, restores the forked conversation into it, seeds `PendingHandoff`,
-    /// and kicks off async derivation + snapshot upload (REMOTE-1486).
+    /// Finishes the local-to-cloud handoff open after the prepare-fork RPC returns.
+    /// Materializes a local fork bound to the server's forked conversation id,
+    /// splits a fresh cloud-mode pane, restores the forked conversation into it,
+    /// seeds `PendingHandoff`, and kicks off async derivation + snapshot upload.
     fn complete_local_to_cloud_handoff_open(
         &mut self,
         source_conversation: AIConversation,
@@ -13093,14 +13081,11 @@ impl Workspace {
         initial_prompt: Option<String>,
         ctx: &mut ViewContext<Self>,
     ) {
-        // Materialize the local fork up-front so the new pane has something to
-        // restore. `fork_conversation` already handles SQLite persistence and
-        // copies tasks / messages over from the source.
+        // Materialize the local fork up-front so the new pane has something to restore.
+        // Preserve source task ids so the local fork's task store matches the cloud-side
+        // fork (the cloud agent's ClientActions reference these task ids).
         let history_model = BlocklistAIHistoryModel::handle(ctx);
         let local_fork = match history_model.update(ctx, |history_model, ctx| {
-            // Preserve source task ids so the local fork's task store matches the cloud-side
-            // fork (which is a byte copy of the source's GCS data). The cloud agent's
-            // ClientActions reference these task ids and must resolve locally.
             history_model.fork_conversation(
                 &source_conversation,
                 FORK_PREFIX,
@@ -13111,13 +13096,18 @@ impl Workspace {
             Ok(forked) => forked,
             Err(err) => {
                 log::warn!("Failed to materialize local fork for handoff: {err:#}");
-                self.show_handoff_error_toast(ctx);
+                let window_id = ctx.window_id();
+                WorkspaceToastStack::handle(ctx).update(ctx, |toast_stack, ctx| {
+                    let toast = DismissibleToast::error(
+                        "Failed to prepare handoff. Please try again.".to_owned(),
+                    );
+                    toast_stack.add_ephemeral_toast(toast, window_id, ctx);
+                });
                 return;
             }
         };
         let local_fork_id = local_fork.id();
 
-        // Split the new cloud-mode pane next to the active pane.
         self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
             pane_group.add_ambient_agent_pane(ctx);
         });
@@ -13140,7 +13130,6 @@ impl Workspace {
             return;
         };
 
-        // Pre-fill the prompt input if the slash command supplied one.
         if let Some(prompt) = initial_prompt.as_deref().filter(|p| !p.is_empty()) {
             new_pane_view.update(ctx, |terminal_view, view_ctx| {
                 terminal_view.input().update(view_ctx, |input, input_ctx| {
@@ -13149,9 +13138,8 @@ impl Workspace {
             });
         }
 
-        // Restore the forked conversation into the new pane so its AI exchanges
-        // are visible immediately. Mirrors the `/fork` in-current-pane flow at
-        // `Self::fork_ai_conversation`.
+        // Restore the forked conversation into the new pane so its AI exchanges are
+        // visible immediately. Mirrors the `/fork` in-current-pane flow.
         let local_fork_for_restore = local_fork.clone();
         new_pane_view.update(ctx, |terminal_view, view_ctx| {
             terminal_view.restore_conversation_after_view_creation(
@@ -13161,17 +13149,9 @@ impl Workspace {
             );
         });
 
-        // Bind the local fork's `server_conversation_token` to the forked
-        // conversation id minted by the server. Must run AFTER
-        // `restore_conversation_after_view_creation`, since `restore_conversations`
-        // overwrites the entry in `conversations_by_id` with the (token-less)
-        // clone we hand it. Binding here ensures that when the cloud agent's
-        // shared session connects with `StreamInit { conversation_id: T_C }`,
-        // `find_existing_conversation_by_server_token` finds the live fork and
-        // `should_skip_replayed_response_for_existing_conversation` correctly
-        // suppresses the replayed response stream — otherwise the replay would
-        // re-enter as new exchanges, flipping `is_executing_oz_environment_startup_commands`
-        // false and breaking setup-command block UI for the handoff pane.
+        // Bind the local fork to the cloud-side conversation id. Must happen AFTER
+        // restore: `restore_conversations` overwrites `conversations_by_id` with the
+        // token-less clone we passed in.
         history_model.update(ctx, |history_model, _| {
             history_model.set_server_conversation_token_for_conversation(
                 local_fork_id,
@@ -13179,25 +13159,19 @@ impl Workspace {
             );
         });
 
-        // Seed `PendingHandoff` so `is_local_to_cloud_handoff()` is true from
-        // here on. `submit_handoff` reads the cached `forked_conversation_id`
-        // and `snapshot_prep_token` directly from this struct — the orchestrator
-        // path that REMOTE-1486 used has been inlined into the async block below.
         let pending = PendingHandoff {
             forked_conversation_id: forked_conversation_id.clone(),
             touched_workspace: None,
-            snapshot_prep_token: None,
+            snapshot_prep: SnapshotPrepStatus::Pending,
             submission_state: HandoffSubmissionState::Idle,
         };
         model_handle.update(ctx, |model, model_ctx| {
             model.set_pending_handoff(Some(pending), model_ctx);
         });
 
-        // Kick off async background prep: derive the touched workspace, then
-        // upload the snapshot. The pane is fully interactive throughout — the
-        // user can scroll, type, and pick an env while this runs. The send
-        // button gate inside `submit_handoff` waits for both the workspace and
-        // the prep token to be cached before allowing a spawn.
+        // Async background prep: derive the touched workspace, then upload the
+        // snapshot. The pane is fully interactive throughout. `submit_handoff`
+        // gates on both completing before allowing a spawn.
         let async_model_handle = model_handle.clone();
         let server_api_provider = ServerApiProvider::as_ref(ctx);
         let ai_client = server_api_provider.get_ai_client();
@@ -13231,8 +13205,17 @@ impl Workspace {
                     }
                     model.set_pending_handoff_workspace(derived_workspace, model_ctx);
                     match upload_result {
-                        Ok(prep_token) => {
-                            model.set_pending_handoff_snapshot_prep_token(prep_token, model_ctx);
+                        Ok(Some(prep_token)) => {
+                            model.set_pending_handoff_snapshot_prep(
+                                SnapshotPrepStatus::Uploaded(prep_token),
+                                model_ctx,
+                            );
+                        }
+                        Ok(None) => {
+                            model.set_pending_handoff_snapshot_prep(
+                                SnapshotPrepStatus::SkippedEmptyWorkspace,
+                                model_ctx,
+                            );
                         }
                         Err(err) => {
                             log::warn!("Handoff snapshot upload failed: {err:#}");

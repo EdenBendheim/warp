@@ -19,18 +19,21 @@ pub use host_selector::{
     Host, HostSelector, HostSelectorAction, HostSelectorEvent, NakedHeaderButtonTheme,
 };
 pub use loading_screen::{render_cloud_mode_error_screen, render_cloud_mode_loading_screen};
-pub(crate) use model::PendingHandoff;
 pub use model::{
     AgentProgress, AmbientAgentViewModel, AmbientAgentViewModelEvent, HandoffSubmissionState,
     Status,
 };
+pub(crate) use model::{PendingHandoff, SnapshotPrepStatus};
 pub use model_selector::{ModelSelector, ModelSelectorAction, ModelSelectorEvent};
 pub use progress::{render_progress, ProgressProps, ProgressStep, ProgressStepState};
 pub use progress_ui_state::AmbientAgentProgressUIState;
 pub use tips::{get_cloud_mode_tips, CloudModeTip};
+
 use parking_lot::FairMutex;
 use std::sync::Arc;
 use warp_core::features::FeatureFlag;
+use warpui::geometry::vector::Vector2F;
+use warpui::{AppContext, ModelHandle, ViewHandle, WindowId};
 
 use crate::ai::blocklist::agent_view::{AgentViewController, AgentViewState};
 use crate::pane_group::TerminalViewResources;
@@ -38,8 +41,6 @@ use crate::terminal::shared_session;
 use crate::terminal::TerminalManager;
 use crate::terminal::TerminalModel;
 use crate::terminal::TerminalView;
-use warpui::geometry::vector::Vector2F;
-use warpui::{AppContext, ModelHandle, ViewHandle, WindowId};
 
 /// Creates a cloud mode terminal view and manager for ambient agent sessions.
 ///
@@ -116,7 +117,7 @@ pub fn create_cloud_mode_view(
                 | AmbientAgentViewModelEvent::HostSelected
                 | AmbientAgentViewModelEvent::HarnessCommandStarted
                 | AmbientAgentViewModelEvent::PendingHandoffChanged
-                | AmbientAgentViewModelEvent::HandoffSubmissionFailed { .. }
+                | AmbientAgentViewModelEvent::HandoffPrepFailed { .. }
                 | AmbientAgentViewModelEvent::UpdatedSetupCommandVisibility => {}
             }
         });
@@ -126,19 +127,8 @@ pub fn create_cloud_mode_view(
 }
 
 /// Returns `true` when a cloud agent shared session is in any pre-first-exchange phase —
-/// either still spawning (loading: "Connecting to Host" / "Creating Environment" /
-/// "Starting Environment") or running setup commands before the first agent turn. In this
-/// state, we hide the interactive input and render a loading footer instead.
-///
-/// During the loading phase the view-model status is `WaitingForSession`; once the cloud
-/// session is ready and setup commands are running it transitions to `AgentRunning` and we
-/// rely on `is_executing_oz_environment_startup_commands` (initialized true on cloud-agent
-/// pane creation, flipped false on the first `AppendedExchange`) to decide whether the
-/// agent has produced its first real turn yet. The flag is correct for both fresh cloud
-/// panes and REMOTE-1519 local-to-cloud handoff panes (whose forked conversation already
-/// has exchanges from the local source, but whose cloud agent has not yet produced its
-/// first new turn) — the `AppendedExchange` handler in `view.rs` ensures the flag only
-/// flips to false on a NEW cloud turn, not on replay-driven events.
+/// either still spawning (loading screen) or running setup commands before the first
+/// agent turn. In this state, we hide the interactive input and render a loading footer.
 pub fn is_cloud_agent_pre_first_exchange(
     ambient_agent_view_model: Option<&ModelHandle<AmbientAgentViewModel>>,
     agent_view_controller: &ModelHandle<AgentViewController>,

@@ -65,18 +65,44 @@ pub enum SessionStartupKind {
     Followup,
 }
 
-/// State of an in-flight local-to-cloud handoff submission.
-///
-/// Gates `submit_handoff` against double-submits. Stays `Idle` from the moment
-/// the pane opens; flips to `Starting` when the user submits and the orchestrator
-/// runs; flips to `Failed` if prep / upload fails so the user can retry by
-/// re-submitting from the same pane.
+/// Gates `submit_handoff` against double-submits.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum HandoffSubmissionState {
     #[default]
     Idle,
     Starting,
+}
+
+/// Outcome of the chip-click async snapshot upload.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SnapshotPrepStatus {
+    /// Upload is still in flight, or has not started yet.
+    #[default]
+    Pending,
+    /// Touched workspace was empty so no upload happened. The cloud agent will
+    /// start with no rehydration content.
+    SkippedEmptyWorkspace,
+    /// Upload succeeded; the inner `prep_token` is sent to the server on spawn.
+    Uploaded(String),
+    /// Upload failed. The error message is surfaced as a toast via
+    /// `HandoffPrepFailed`.
     Failed(String),
+}
+
+impl SnapshotPrepStatus {
+    /// True when the upload has settled successfully (uploaded or skipped).
+    /// Pending and Failed both block submit.
+    fn is_settled(&self) -> bool {
+        matches!(self, Self::Uploaded(_) | Self::SkippedEmptyWorkspace)
+    }
+
+    /// Returns the `handoff_prep_token` to send on spawn, if any.
+    fn prep_token(&self) -> Option<String> {
+        match self {
+            Self::Uploaded(token) => Some(token.clone()),
+            Self::SkippedEmptyWorkspace | Self::Pending | Self::Failed(_) => None,
+        }
+    }
 }
 
 /// Per-pane handoff context. Seeded by the chip / slash command's open path on a
@@ -89,13 +115,10 @@ pub(crate) struct PendingHandoff {
     /// chip-click time. Sent under `conversation_id` (resume semantics) on the
     /// subsequent `POST /agent/runs` request so the new task picks up the fork.
     pub(crate) forked_conversation_id: String,
-    /// `None` until `derive_touched_workspace` completes (REMOTE-1486).
+    /// `None` until `derive_touched_workspace` completes.
     pub(crate) touched_workspace: Option<TouchedWorkspace>,
-    /// Snapshot upload outcome: `None` while the upload is in flight or never
-    /// started; `Some(Some(token))` once minted (the standard case);
-    /// `Some(None)` when the workspace was empty so no upload happened.
-    /// `submit_handoff` requires this to be `Some(_)` before spawning.
-    pub(crate) snapshot_prep_token: Option<Option<String>>,
+    /// Outcome of the async snapshot upload.
+    pub(crate) snapshot_prep: SnapshotPrepStatus,
     /// Gates submit — prevents double-submitting while the spawn is in flight.
     pub(crate) submission_state: HandoffSubmissionState,
 }
@@ -332,27 +355,22 @@ impl AmbientAgentViewModel {
         CLIAgent::from_harness(self.harness)
     }
 
-    /// True when this pane is a local-to-cloud handoff pane. Flipped on the moment
-    /// the chip or `/oz-cloud-handoff` slash command opens this pane (see
-    /// `Workspace::start_local_to_cloud_handoff`) and stays true through and past the
-    /// spawn, so post-spawn flows (queued-prompt rendering, V2-input suppression,
-    /// submit interception) all observe the same source of truth.
+    /// True when this pane is a local-to-cloud handoff pane. Set when the handoff opens
+    /// the pane and stays true through and past the spawn.
     pub(crate) fn is_local_to_cloud_handoff(&self) -> bool {
         self.pending_handoff.is_some()
     }
 
-    /// True when this pane is a handoff pane AND the async
-    /// `derive_touched_workspace` derivation has finished AND no submission is
-    /// already in flight. Callers in the input layer use this to gate clearing
-    /// the editor buffer on submit — if derivation hasn't completed yet, we
-    /// must leave the prompt and pending attachments alone instead of
-    /// silently dropping them on the floor.
+    /// True when this pane is a handoff pane and the touched-workspace derivation +
+    /// snapshot upload have both settled and no submission is in flight. Used by the
+    /// input layer to gate clearing the editor buffer on submit.
     pub(crate) fn is_handoff_ready_to_submit(&self) -> bool {
         let Some(handoff) = self.pending_handoff.as_ref() else {
             return false;
         };
         handoff.touched_workspace.is_some()
-            && !matches!(handoff.submission_state, HandoffSubmissionState::Starting)
+            && handoff.snapshot_prep.is_settled()
+            && matches!(handoff.submission_state, HandoffSubmissionState::Idle)
     }
 
     /// Seeds the handoff context onto this pane. Called by the workspace bootstrap
@@ -380,51 +398,35 @@ impl AmbientAgentViewModel {
         ctx.emit(AmbientAgentViewModelEvent::PendingHandoffChanged);
     }
 
-    /// Updates the submission state on the pending handoff. No-op when no handoff
-    /// context is set.
-    pub(crate) fn set_pending_handoff_submission_state(
+    /// Records the outcome of the async snapshot upload. The standard success
+    /// case is `Uploaded(token)`; `SkippedEmptyWorkspace` when the workspace
+    /// had nothing to upload; `Failed` is set by `record_handoff_prep_failed`.
+    /// No-op when no handoff context is set.
+    pub(crate) fn set_pending_handoff_snapshot_prep(
         &mut self,
-        state: HandoffSubmissionState,
+        snapshot_prep: SnapshotPrepStatus,
         ctx: &mut ModelContext<Self>,
     ) {
         let Some(handoff) = self.pending_handoff.as_mut() else {
             return;
         };
-        handoff.submission_state = state;
+        handoff.snapshot_prep = snapshot_prep;
         ctx.emit(AmbientAgentViewModelEvent::PendingHandoffChanged);
     }
 
-    /// Records a chip-click handoff prep+upload failure on the pending handoff.
-    /// Flips the submission state to `Failed` (so the status footer / banner
-    /// reflects the error) and emits `HandoffSubmissionFailed` so the input
-    /// layer can surface a user-visible toast.
+    /// Records a snapshot prep+upload failure on the pending handoff. Sets
+    /// `snapshot_prep` to `Failed` (so submit stays gated) and emits
+    /// `HandoffPrepFailed` so the input layer can surface a user-visible toast.
     pub(crate) fn record_handoff_prep_failed(
         &mut self,
         error_message: String,
         ctx: &mut ModelContext<Self>,
     ) {
-        self.set_pending_handoff_submission_state(
-            HandoffSubmissionState::Failed(error_message.clone()),
+        self.set_pending_handoff_snapshot_prep(
+            SnapshotPrepStatus::Failed(error_message.clone()),
             ctx,
         );
-        ctx.emit(AmbientAgentViewModelEvent::HandoffSubmissionFailed { error_message });
-    }
-
-    /// Records the outcome of the chip-click async snapshot upload on the pending
-    /// handoff so `submit_handoff` can read the prep token without re-running
-    /// the upload. `Some(token)` is the standard success case; `None` means the
-    /// touched workspace was empty (no upload happened, no rehydration needed).
-    /// No-op when no handoff context is set.
-    pub(crate) fn set_pending_handoff_snapshot_prep_token(
-        &mut self,
-        prep_token: Option<String>,
-        ctx: &mut ModelContext<Self>,
-    ) {
-        let Some(handoff) = self.pending_handoff.as_mut() else {
-            return;
-        };
-        handoff.snapshot_prep_token = Some(prep_token);
-        ctx.emit(AmbientAgentViewModelEvent::PendingHandoffChanged);
+        ctx.emit(AmbientAgentViewModelEvent::HandoffPrepFailed { error_message });
     }
 
     /// Whether the harness CLI has started running. Only meaningful for non-oz runs.
@@ -1155,13 +1157,9 @@ impl AmbientAgentViewModel {
         ctx.emit(AmbientAgentViewModelEvent::Cancelled);
     }
 
-    /// Drive the local-to-cloud handoff submission for this pane.
-    ///
-    /// Called by the cloud-mode submit dispatch when the pane has `pending_handoff`
-    /// set. The fork (REMOTE-1519) and snapshot upload (REMOTE-1486) both happen
-    /// at chip-click time — this method just reads the cached `forked_conversation_id`
-    /// and `snapshot_prep_token` off the pending handoff and routes through the
-    /// same `spawn_agent_with_request` path that regular cloud-mode runs use.
+    /// Drive the local-to-cloud handoff submission for this pane. Reads the cached
+    /// `forked_conversation_id` and `snapshot_prep` off the pending handoff and routes
+    /// through `spawn_agent_with_request`. Caller must check `is_handoff_ready_to_submit`.
     pub(crate) fn submit_handoff(
         &mut self,
         prompt: String,
@@ -1180,21 +1178,21 @@ impl AmbientAgentViewModel {
             log::warn!("submit_handoff called before touched-workspace derivation completed");
             return;
         }
-        let Some(prep_token) = handoff.snapshot_prep_token.clone() else {
-            log::warn!("submit_handoff called before snapshot upload completed");
+        if !handoff.snapshot_prep.is_settled() {
+            log::warn!(
+                "submit_handoff called with unsettled snapshot_prep: {:?}",
+                handoff.snapshot_prep
+            );
             return;
-        };
+        }
+        let prep_token = handoff.snapshot_prep.prep_token();
         let forked_conversation_id = handoff.forked_conversation_id.clone();
         handoff.submission_state = HandoffSubmissionState::Starting;
         ctx.emit(AmbientAgentViewModelEvent::PendingHandoffChanged);
 
-        // Build the spawn config from the model so the env selector chip's
-        // pick (and `WARP_CLOUD_MODE_DEFAULT_HOST` / model / harness defaults)
-        // propagate into the spawn request.
+        // Build the spawn config so the env selector chip + `/plan` / `/orchestrate`
+        // mode prefix propagate into the request, matching a regular cloud-mode spawn.
         let config = Some(self.build_default_spawn_config(ctx));
-        // Strip any `/plan` / `/orchestrate` prefix from the prompt and surface
-        // it as the request's `mode` so the cloud agent honors the same modes
-        // the local-mode spawn path does.
         let (prompt, mode) = extract_user_query_mode(prompt);
         let request = SpawnAgentRequest {
             prompt,
@@ -1289,15 +1287,11 @@ pub enum AmbientAgentViewModelEvent {
     /// Fires once per run and signals the transition out of the pre-first-exchange phase
     /// for claude / gemini / other third-party harnesses.
     HarnessCommandStarted,
-    /// The pane's `pending_handoff` was updated — derivation completed, submission
-    /// state transitioned, etc.
+    /// The pane's `pending_handoff` was updated.
     PendingHandoffChanged,
-    /// The handoff prep + upload phase failed at chip-click time. The input
-    /// layer subscribes to surface the error as a toast; the editor buffer is
-    /// untouched because the user's prompt was never cleared (submit is gated
-    /// behind the cached prep token, so a failed upload prevents submit
-    /// entirely instead of consuming the prompt).
-    HandoffSubmissionFailed {
+    /// The async snapshot prep+upload failed. The input layer subscribes to
+    /// surface the error as a toast.
+    HandoffPrepFailed {
         error_message: String,
     },
 

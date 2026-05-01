@@ -915,11 +915,11 @@ impl View for AIBlock {
             query_and_index
                 .as_ref()
                 .is_some_and(|(query_for_display, ..)| {
-                    let has_optimistic_user_query = self
-                        .ambient_agent_view_model
-                        .as_ref()
-                        .is_some_and(|model| {
-                            model.as_ref(app).has_optimistic_user_query(query_for_display)
+                    let has_optimistic_user_query =
+                        self.ambient_agent_view_model.as_ref().is_some_and(|model| {
+                            model
+                                .as_ref(app)
+                                .has_optimistic_user_query(query_for_display)
                         });
                     should_hide_ai_block_query_and_header(
                         has_optimistic_user_query,

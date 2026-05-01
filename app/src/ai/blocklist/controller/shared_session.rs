@@ -113,15 +113,9 @@ impl BlocklistAIController {
             self.find_existing_conversation_by_server_token(&init_event.conversation_id, ctx);
         let conversation_id = existing_conversation_id
             .inspect(|conversation_id| {
-                // The local conversation is bound to a cloud-side session, so the cloud agent
-                // is the source of truth for user inputs going forward. Mark it as a shared-
-                // session view so `apply_client_actions` reconstructs UserQuery / ActionResult
-                // inputs from the cloud agent's response messages — without this, the local
-                // exchange's inputs stay empty and the AI block has no user query to render.
-                // Idempotent for conversations that already have the flag set (e.g. regular
-                // cloud mode, where `start_new_conversation` set it at creation time);
-                // important for REMOTE-1519 local-to-cloud handoff, where the local fork
-                // started as a non-shared-session conversation.
+                // The local conversation is bound to a cloud-side session, so mark it as a
+                // shared-session view; otherwise `apply_client_actions` won't reconstruct
+                // UserQuery / ActionResult inputs from the cloud agent's response messages.
                 history.update(ctx, |history, _| {
                     history.set_viewing_shared_session_for_conversation(*conversation_id, true);
                 });
@@ -250,12 +244,9 @@ impl BlocklistAIController {
         }
         drop(model);
 
-        // Only skip the replayed response stream when we already have a local
-        // exchange whose `server_output_id` matches its `request_id`. New
-        // exchanges that the cloud agent appended after the local fork (e.g.
-        // the user's first submitted prompt for a REMOTE-1519 local-to-cloud
-        // handoff pane) carry request_ids we have never seen and must flow
-        // through normally so the viewer's blocklist picks them up.
+        // Only skip the replayed response when we already have a local exchange whose
+        // `server_output_id` matches `request_id`. New exchanges (e.g. the user's first
+        // post-handoff prompt) carry unseen request_ids and must flow through normally.
         let history = BlocklistAIHistoryModel::as_ref(ctx);
         let known_server_output_ids: Vec<String> = history
             .conversation(&conversation_id)
