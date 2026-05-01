@@ -119,8 +119,8 @@ use super::common::{
     STATUS_FOOTER_VERTICAL_PADDING, STATUS_ICON_SIZE_DELTA,
 };
 use super::imported_comments::render_imported_comments;
-use super::orchestrate;
 use super::orchestration;
+use super::run_agents;
 use super::todos::render_todos;
 use super::CONTENT_HORIZONTAL_PADDING;
 use super::{
@@ -193,18 +193,18 @@ pub(crate) struct Props<'a> {
     pub(super) aws_bedrock_credentials_error_view:
         Option<&'a ViewHandle<AwsBedrockCredentialsErrorView>>,
     pub(super) imported_comments: &'a HashMap<AIAgentActionId, ImportedCommentGroup>,
-    pub(super) orchestrate_edit_states:
-        &'a HashMap<AIAgentActionId, super::super::OrchestrateEditState>,
-    pub(super) orchestrate_card_handles:
-        &'a HashMap<AIAgentActionId, super::super::OrchestrateCardHandles>,
+    pub(super) run_agents_edit_states:
+        &'a HashMap<AIAgentActionId, super::super::RunAgentsEditState>,
+    pub(super) run_agents_card_handles:
+        &'a HashMap<AIAgentActionId, super::super::RunAgentsCardHandles>,
     /// Per-action snapshot of an in-flight orchestrate dispatch. Used by
-    /// `render_orchestrate` to (a) bypass Round 7's hide-while-streaming
+    /// `render_run_agents` to (a) bypass Round 7's hide-while-streaming
     /// gate so the spawning card still renders if streaming re-enters
     /// during the dispatch window, and (b) source the
     /// "Spawning N agents…" in-flight card. See
-    /// `block.rs::OrchestrateSpawningSnapshot` for full semantics.
-    pub(super) orchestrate_spawning:
-        &'a HashMap<AIAgentActionId, super::super::OrchestrateSpawningSnapshot>,
+    /// `block.rs::RunAgentsSpawningSnapshot` for full semantics.
+    pub(super) run_agents_spawning:
+        &'a HashMap<AIAgentActionId, super::super::RunAgentsSpawningSnapshot>,
     #[cfg(feature = "local_fs")]
     pub(crate) resolved_code_block_paths:
         &'a HashMap<std::path::PathBuf, Option<std::path::PathBuf>>,
@@ -758,10 +758,10 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                             ));
                         }
                         AIAgentOutputMessageType::Action(AIAgentAction {
-                            action: AIAgentActionType::Orchestrate(req),
+                            action: AIAgentActionType::RunAgents(req),
                             id,
                             ..
-                        }) if FeatureFlag::OrchestrateTool.is_enabled() => {
+                        }) if FeatureFlag::RunAgentsTool.is_enabled() => {
                             // Stage 1 orchestrate confirmation card. Renders
                             // directly from `Message.ToolCall.Orchestrate`
                             // (no parallel ClientAction).
@@ -773,18 +773,17 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                             // "Spawning agents..." message instead.
                             //
                             // Exception: if the action has an entry in
-                            // `orchestrate_spawning`, the user has already
+                            // `run_agents_spawning`, the user has already
                             // accepted and we are mid-dispatch — in that
                             // case keep rendering so the in-flight
                             // "Spawning N agents…" card stays visible
                             // even if the AI block re-enters streaming.
                             should_render_footer = false;
                             should_render_suggestions = false;
-                            if !status.is_streaming() || props.orchestrate_spawning.contains_key(id)
+                            if !status.is_streaming() || props.run_agents_spawning.contains_key(id)
                             {
-                                output_items.add_child(orchestrate::render_orchestrate(
-                                    props, id, req, app,
-                                ));
+                                output_items
+                                    .add_child(run_agents::render_run_agents(props, id, req, app));
                             }
                         }
                         AIAgentOutputMessageType::Action(AIAgentAction {

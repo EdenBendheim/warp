@@ -24,10 +24,10 @@ mod comments;
 mod header;
 mod imported_comments;
 mod input;
-mod orchestrate;
 mod orchestration;
 pub mod output;
 pub mod query;
+mod run_agents;
 mod todos;
 
 use common::get_highlight_ranges_for_find_matches;
@@ -64,7 +64,7 @@ use crate::util::truncation::truncate_from_end;
 use super::secret_redaction::SecretRedactionState;
 use super::{
     attachment_names, AIBlock, AIBlockAction, DISPATCHED_REQUESTED_EDIT_KEYMAP_CONTEXT,
-    HAS_PENDING_ACTION, ORCHESTRATE_EDITOR_OPEN, RICH_CONTENT_SECRET_FIRST_CHAR_POSITION_ID,
+    HAS_PENDING_ACTION, RICH_CONTENT_SECRET_FIRST_CHAR_POSITION_ID, RUN_AGENTS_EDITOR_OPEN,
 };
 
 use super::TextLocation;
@@ -1095,9 +1095,9 @@ impl View for AIBlock {
                     .aws_bedrock_credentials_error_view
                     .as_ref(),
                 imported_comments: &self.imported_comments,
-                orchestrate_edit_states: &self.orchestrate_edit_states,
-                orchestrate_card_handles: &self.orchestrate_card_handles,
-                orchestrate_spawning: &self.orchestrate_spawning,
+                run_agents_edit_states: &self.run_agents_edit_states,
+                run_agents_card_handles: &self.run_agents_card_handles,
+                run_agents_spawning: &self.run_agents_spawning,
                 #[cfg(feature = "local_fs")]
                 resolved_code_block_paths: &self.resolved_code_block_paths,
                 #[cfg(feature = "local_fs")]
@@ -1254,8 +1254,8 @@ impl View for AIBlock {
         // Gate the orchestrate-card Esc keybinding so it only fires
         // when at least one orchestrate confirmation card on this block
         // has its inline editor open.
-        if self.has_orchestrate_editor_open() {
-            context.set.insert(ORCHESTRATE_EDITOR_OPEN);
+        if self.has_run_agents_editor_open() {
+            context.set.insert(RUN_AGENTS_EDITOR_OPEN);
         }
 
         context

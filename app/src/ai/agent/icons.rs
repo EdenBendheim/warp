@@ -81,7 +81,7 @@ pub fn yellow_stop_icon(appearance: &Appearance) -> warpui::elements::Icon {
 /// apply-diff card uses for its `WaitingForUser` state — keeps the
 /// confirmation icon consistent across tool-call cards and lets the
 /// theme drive the exact hue.
-pub fn orchestrate_stop_icon(appearance: &Appearance) -> warpui::elements::Icon {
+pub fn run_agents_stop_icon(appearance: &Appearance) -> warpui::elements::Icon {
     yellow_stop_icon(appearance)
 }
 

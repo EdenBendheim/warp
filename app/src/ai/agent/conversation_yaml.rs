@@ -510,7 +510,7 @@ fn write_tool_call_args(out: &mut String, tool: &Tool) {
                 out.push_str(&format!("  - deleted: {}\n", df.file_path));
             }
         }
-        Tool::Orchestrate(o) => {
+        Tool::RunAgents(o) => {
             out.push_str(&format!(
                 "summary: \"{}\"\n",
                 escape_yaml_string(&o.summary)
@@ -542,19 +542,19 @@ fn write_tool_call_args(out: &mut String, tool: &Tool) {
 /// Writes content from structured tool call results.
 fn write_tool_call_result_content(out: &mut String, result: &ToolCallResultType) {
     match result {
-        ToolCallResultType::OrchestrateResult(r) => match &r.outcome {
-            Some(api::orchestrate_result::Outcome::Launched(launched)) => {
+        ToolCallResultType::RunAgentsResult(r) => match &r.outcome {
+            Some(api::run_agents_result::Outcome::Launched(launched)) => {
                 out.push_str("status: launched\n");
                 out.push_str(&format!("agent_count: {}\n", launched.agents.len()));
             }
-            Some(api::orchestrate_result::Outcome::LaunchDenied(denied)) => {
+            Some(api::run_agents_result::Outcome::Denied(denied)) => {
                 out.push_str("status: launch_denied\n");
                 out.push_str(&format!(
                     "reason: \"{}\"\n",
                     escape_yaml_string(&denied.reason)
                 ));
             }
-            Some(api::orchestrate_result::Outcome::Failure(failure)) => {
+            Some(api::run_agents_result::Outcome::Failure(failure)) => {
                 out.push_str("status: failure\n");
                 out.push_str(&format!(
                     "error: \"{}\"\n",

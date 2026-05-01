@@ -11,8 +11,8 @@ use crate::ai::agent::todos::AIAgentTodoList;
 use crate::ai::agent::{
     util::parse_markdown_into_text_and_code_sections, AIAgentAction, AIAgentActionType,
     AIAgentCitation, AIAgentInput, AIAgentOutputMessage, AIAgentText, AIAgentTodo,
-    ArtifactCreatedData, MessageId, OrchestrateAgentRunConfig, OrchestrateExecutionMode,
-    OrchestrateRequest, StartAgentExecutionMode, SuggestedAgentModeWorkflow, SuggestedRule,
+    ArtifactCreatedData, MessageId, RunAgentsAgentRunConfig, RunAgentsExecutionMode,
+    RunAgentsRequest, StartAgentExecutionMode, SuggestedAgentModeWorkflow, SuggestedRule,
     Suggestions, TodoOperation,
 };
 use crate::ai::agent::{
@@ -95,31 +95,30 @@ fn convert_start_agent_execution_mode(
     }
 }
 
-fn convert_orchestrate_execution_mode(
-    execution_mode: Option<api::orchestrate::ExecutionMode>,
-) -> OrchestrateExecutionMode {
+fn convert_run_agents_execution_mode(
+    execution_mode: Option<api::run_agents::ExecutionMode>,
+) -> RunAgentsExecutionMode {
     match execution_mode {
-        Some(api::orchestrate::ExecutionMode::Remote(remote)) => OrchestrateExecutionMode::Remote {
+        Some(api::run_agents::ExecutionMode::Remote(remote)) => RunAgentsExecutionMode::Remote {
             environment_id: remote.environment_id,
             worker_host: remote.worker_host,
             computer_use_enabled: remote.computer_use_enabled,
         },
-        Some(api::orchestrate::ExecutionMode::Local(_)) | None => OrchestrateExecutionMode::Local,
+        Some(api::run_agents::ExecutionMode::Local(_)) | None => RunAgentsExecutionMode::Local,
     }
 }
 
-fn convert_orchestrate(orchestrate: api::Orchestrate) -> AIAgentActionType {
-    let api::Orchestrate {
+fn convert_run_agents(run_agents: api::RunAgents) -> AIAgentActionType {
+    let api::RunAgents {
         summary,
         base_prompt,
         skills,
         model_id,
         harness,
         agent_run_configs,
-        auto_launch,
         execution_mode,
-    } = orchestrate;
-    AIAgentActionType::Orchestrate(OrchestrateRequest {
+    } = run_agents;
+    AIAgentActionType::RunAgents(RunAgentsRequest {
         summary,
         base_prompt,
         skills: skills
@@ -127,17 +126,19 @@ fn convert_orchestrate(orchestrate: api::Orchestrate) -> AIAgentActionType {
             .filter_map(convert_skill_reference)
             .collect(),
         model_id,
-        harness_type: convert_start_agent_v2_harness_type(harness).unwrap_or_default(),
-        execution_mode: convert_orchestrate_execution_mode(execution_mode),
+        harness_type: harness
+            .map(|h| h.r#type)
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_default(),
+        execution_mode: convert_run_agents_execution_mode(execution_mode),
         agent_run_configs: agent_run_configs
             .into_iter()
-            .map(|config| OrchestrateAgentRunConfig {
+            .map(|config| RunAgentsAgentRunConfig {
                 name: config.name,
                 prompt: config.prompt,
                 title: config.title,
             })
             .collect(),
-        auto_launch,
     })
 }
 
@@ -811,8 +812,8 @@ impl ConvertAPIToolCallToAIAgentAction for api::message::ToolCall {
                     ),
                 })
             }
-            api::message::tool_call::Tool::Orchestrate(orchestrate) => {
-                create_standard_action(convert_orchestrate(orchestrate))
+            api::message::tool_call::Tool::RunAgents(orchestrate) => {
+                create_standard_action(convert_run_agents(orchestrate))
             }
             api::message::tool_call::Tool::SendMessageToAgent(send_message) => {
                 create_standard_action(AIAgentActionType::SendMessageToAgent {

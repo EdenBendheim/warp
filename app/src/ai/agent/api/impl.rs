@@ -7,7 +7,7 @@ use warp_multi_agent_api as api;
 
 use crate::server::server_api::ServerApi;
 
-use super::{ConvertToAPITypeError, RequestParams, ResponseStream, convert_to::convert_input};
+use super::{convert_to::convert_input, ConvertToAPITypeError, RequestParams, ResponseStream};
 
 pub async fn generate_multi_agent_output(
     server_api: Arc<ServerApi>,
@@ -105,7 +105,6 @@ pub async fn generate_multi_agent_output(
             supports_bundled_skills: FeatureFlag::BundledSkills.is_enabled(),
             supports_research_agent: params.research_agent_enabled,
             supports_orchestration_v2: FeatureFlag::OrchestrationV2.is_enabled(),
-            supports_orchestrate: FeatureFlag::OrchestrateTool.is_enabled(),
         }),
         metadata: Some(api::request::Metadata {
             logging: logging_metadata,
@@ -234,8 +233,8 @@ fn get_supported_tools(params: &RequestParams) -> Vec<api::ToolType> {
         } else {
             api::ToolType::StartAgent
         });
-        if FeatureFlag::OrchestrateTool.is_enabled() && FeatureFlag::OrchestrationV2.is_enabled() {
-            supported_tools.push(api::ToolType::Orchestrate);
+        if FeatureFlag::RunAgentsTool.is_enabled() && FeatureFlag::OrchestrationV2.is_enabled() {
+            supported_tools.push(api::ToolType::RunAgents);
         }
         supported_tools.push(api::ToolType::SendMessageToAgent);
     }

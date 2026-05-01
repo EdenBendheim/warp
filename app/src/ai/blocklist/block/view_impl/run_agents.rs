@@ -20,8 +20,8 @@
 //! Spec references: TECH.md §8, §9; PRODUCT.md "Confirmation card",
 //! "Post-action card states", "Invariants".
 
-use ai::agent::action::{OrchestrateExecutionMode, OrchestrateRequest};
-use ai::agent::action_result::{OrchestrateAgentOutcomeKind, OrchestrateResult};
+use ai::agent::action::{RunAgentsExecutionMode, RunAgentsRequest};
+use ai::agent::action_result::{RunAgentsAgentOutcomeKind, RunAgentsResult};
 use pathfinder_color::ColorU;
 use std::rc::Rc;
 use warpui::elements::{
@@ -38,7 +38,7 @@ use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::blocklist::action_model::AIActionStatus;
 use crate::ai::blocklist::agent_view::orchestration_pill_bar::render_static_agent_pill;
 use crate::ai::blocklist::block::{
-    AIBlockAction, OrchestrateCardHandles, OrchestrateEditState, OrchestrateSpawningSnapshot,
+    AIBlockAction, RunAgentsCardHandles, RunAgentsEditState, RunAgentsSpawningSnapshot,
 };
 use crate::ai::blocklist::inline_action::inline_action_header::{HeaderConfig, InteractionMode};
 use crate::ai::blocklist::inline_action::inline_action_icons;
@@ -53,7 +53,7 @@ use crate::view_components::compactible_action_button::{
 /// throughout the orchestrate edit state. The recommendation copy in
 /// `render_editor` is gated on this so non-Warp hosts — where the
 /// environment concept doesn't apply — don't surface the recommendation.
-const ORCHESTRATE_WARP_WORKER_HOST: &str = "warp";
+const RUN_AGENTS_WARP_WORKER_HOST: &str = "warp";
 
 use super::output::Props;
 use super::WithContentItemSpacing;
@@ -61,24 +61,24 @@ use super::WithContentItemSpacing;
 /// Static title rendered in the orchestrate confirmation card header. Per
 /// spec §8 this is invariant client copy; the LLM-supplied `summary` field
 /// is repurposed as the body description.
-const ORCHESTRATE_CARD_TITLE: &str = "Can I add additional agents to this task?";
+const RUN_AGENTS_CARD_TITLE: &str = "Can I add additional agents to this task?";
 
 /// Renders the full orchestrate confirmation card.
 ///
 /// Dispatched from the tool-call view dispatcher in `output.rs`. The card
-/// is gated on `FeatureFlag::OrchestrateTool` at the dispatcher level; when
+/// is gated on `FeatureFlag::RunAgentsTool` at the dispatcher level; when
 /// the flag is off this function is never reached.
-pub(super) fn render_orchestrate(
+pub(super) fn render_run_agents(
     props: Props,
     action_id: &AIAgentActionId,
-    req: &OrchestrateRequest,
+    req: &RunAgentsRequest,
     app: &AppContext,
 ) -> Box<dyn Element> {
     let appearance = Appearance::as_ref(app);
     let status = props.action_model.as_ref(app).get_action_status(action_id);
 
     if let Some(AIActionStatus::Finished(result)) = &status {
-        if let AIAgentActionResultType::Orchestrate(orchestrate_result) = &result.result {
+        if let AIAgentActionResultType::RunAgents(orchestrate_result) = &result.result {
             return render_terminal_state(req, orchestrate_result, appearance, app);
         }
         log::error!(
@@ -96,7 +96,7 @@ pub(super) fn render_orchestrate(
     // confirmation card otherwise stays visible for hundreds of ms
     // (Local+harness `create_agent_task` round-trip), tempting users
     // to mash Enter.
-    if let Some(snapshot) = props.orchestrate_spawning.get(action_id) {
+    if let Some(snapshot) = props.run_agents_spawning.get(action_id) {
         return render_spawning_card(snapshot, appearance, app);
     }
 
@@ -123,12 +123,12 @@ pub(super) fn render_orchestrate(
     // that intermediate state, mirroring how the edit/apply-diff
     // tool-call card behaves before the user accepts.
     let display_state = props
-        .orchestrate_edit_states
+        .run_agents_edit_states
         .get(action_id)
         .cloned()
-        .unwrap_or_else(|| OrchestrateEditState::from_request(req));
+        .unwrap_or_else(|| RunAgentsEditState::from_request(req));
     let handles = props
-        .orchestrate_card_handles
+        .run_agents_card_handles
         .get(action_id)
         .cloned()
         .unwrap_or_default();
@@ -139,8 +139,8 @@ pub(super) fn render_orchestrate(
 
 fn render_confirmation_card(
     action_id: &AIAgentActionId,
-    state: &OrchestrateEditState,
-    handles: &OrchestrateCardHandles,
+    state: &RunAgentsEditState,
+    handles: &RunAgentsCardHandles,
     is_blocked: bool,
     app: &AppContext,
 ) -> Box<dyn Element> {
@@ -180,10 +180,10 @@ fn render_confirmation_card(
         .finish()
 }
 
-fn render_header(handles: &OrchestrateCardHandles, app: &AppContext) -> Box<dyn Element> {
+fn render_header(handles: &RunAgentsCardHandles, app: &AppContext) -> Box<dyn Element> {
     let appearance = Appearance::as_ref(app);
-    let mut config = HeaderConfig::new(ORCHESTRATE_CARD_TITLE, app)
-        .with_icon(icons::orchestrate_stop_icon(appearance))
+    let mut config = HeaderConfig::new(RUN_AGENTS_CARD_TITLE, app)
+        .with_icon(icons::run_agents_stop_icon(appearance))
         .with_corner_radius_override(CornerRadius::with_top(Radius::Pixels(8.)));
 
     if let (Some(reject), Some(edit), Some(accept)) = (
@@ -205,7 +205,7 @@ fn render_header(handles: &OrchestrateCardHandles, app: &AppContext) -> Box<dyn 
     config.render(app)
 }
 
-fn render_body(state: &OrchestrateEditState, app: &AppContext) -> Box<dyn Element> {
+fn render_body(state: &RunAgentsEditState, app: &AppContext) -> Box<dyn Element> {
     let appearance = Appearance::as_ref(app);
     let theme = appearance.theme();
     let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
@@ -226,7 +226,7 @@ fn render_body(state: &OrchestrateEditState, app: &AppContext) -> Box<dyn Elemen
 }
 
 fn render_summary_with_edit_chip(
-    state: &OrchestrateEditState,
+    state: &RunAgentsEditState,
     appearance: &Appearance,
 ) -> Box<dyn Element> {
     // Per polish round 2 P2.3: the summary text is not editable, so the
@@ -257,7 +257,7 @@ fn render_summary_with_edit_chip(
         .finish()
 }
 
-fn render_agents_section(state: &OrchestrateEditState, app: &AppContext) -> Box<dyn Element> {
+fn render_agents_section(state: &RunAgentsEditState, app: &AppContext) -> Box<dyn Element> {
     let appearance = Appearance::as_ref(app);
     let theme = appearance.theme();
     let label = Text::new(
@@ -284,17 +284,17 @@ fn render_agents_section(state: &OrchestrateEditState, app: &AppContext) -> Box<
 }
 
 fn render_terminal_state(
-    req: &OrchestrateRequest,
-    result: &OrchestrateResult,
+    req: &RunAgentsRequest,
+    result: &RunAgentsResult,
     appearance: &Appearance,
     app: &AppContext,
 ) -> Box<dyn Element> {
     match result {
-        OrchestrateResult::Launched { agents, .. } => {
+        RunAgentsResult::Launched { agents, .. } => {
             let total = agents.len();
             let launched = agents
                 .iter()
-                .filter(|a| matches!(a.kind, OrchestrateAgentOutcomeKind::Launched { .. }))
+                .filter(|a| matches!(a.kind, RunAgentsAgentOutcomeKind::Launched { .. }))
                 .count();
             // Per P2.3, all-success uses "Spawned N agent(s)" with proper
             // pluralization; mixed uses "Spawned X of Y agents".
@@ -318,7 +318,7 @@ fn render_terminal_state(
                 app,
             )
         }
-        OrchestrateResult::LaunchDenied { reason } => {
+        RunAgentsResult::Denied { reason } => {
             let body = if reason.is_empty() {
                 "Orchestration is currently disabled. Re-enable on the plan card to launch."
                     .to_string()
@@ -329,7 +329,7 @@ fn render_terminal_state(
             };
             render_status_only_card(body, appearance, StatusKind::Cancelled, app)
         }
-        OrchestrateResult::Failure { error } => {
+        RunAgentsResult::Failure { error } => {
             let _ = req;
             let label = if error.is_empty() {
                 "Failed to start orchestration".to_string()
@@ -338,7 +338,7 @@ fn render_terminal_state(
             };
             render_status_only_card(label, appearance, StatusKind::Failure, app)
         }
-        OrchestrateResult::Cancelled => render_status_only_card(
+        RunAgentsResult::Cancelled => render_status_only_card(
             "Spawn agents cancelled".to_string(),
             appearance,
             StatusKind::Cancelled,
@@ -363,7 +363,7 @@ enum StatusKind {
 /// Visually identical to the terminal `Launched` success card except
 /// for the label text and the running-state icon.
 fn render_spawning_card(
-    snapshot: &OrchestrateSpawningSnapshot,
+    snapshot: &RunAgentsSpawningSnapshot,
     appearance: &Appearance,
     app: &AppContext,
 ) -> Box<dyn Element> {
@@ -419,8 +419,8 @@ fn render_status_only_card(
 
 fn render_editor(
     action_id: &AIAgentActionId,
-    state: &OrchestrateEditState,
-    handles: &OrchestrateCardHandles,
+    state: &RunAgentsEditState,
+    handles: &RunAgentsCardHandles,
     app: &AppContext,
 ) -> Box<dyn Element> {
     // Per Figma 4340:117057 the editor is a Local/Cloud segmented control
@@ -501,8 +501,8 @@ fn render_editor(
 /// `Flex::row` is set to `MainAxisSize::Max` to opt the children into
 /// flexible sizing.
 fn render_picker_row_quad(
-    state: &OrchestrateEditState,
-    handles: &OrchestrateCardHandles,
+    state: &RunAgentsEditState,
+    handles: &RunAgentsCardHandles,
     appearance: &Appearance,
 ) -> Box<dyn Element> {
     // P4.5: in Local mode there are only two pickers (Agent harness +
@@ -550,7 +550,7 @@ fn render_picker_row_quad(
     );
     // Host + Environment only render in Cloud (Remote) mode. Local mode
     // hides them per PRODUCT.md \u00a7"Default state and prepopulation rules";
-    // the underlying `OrchestrateExecutionMode::Local` variant has no
+    // the underlying `RunAgentsExecutionMode::Local` variant has no
     // host or environment fields.
     if is_remote {
         add_picker(
@@ -618,8 +618,8 @@ fn render_picker_column(
 /// visible side-by-side, with no border between them.
 fn render_mode_toggle(
     action_id: &AIAgentActionId,
-    state: &OrchestrateEditState,
-    handles: &OrchestrateCardHandles,
+    state: &RunAgentsEditState,
+    handles: &RunAgentsCardHandles,
     appearance: &Appearance,
 ) -> Box<dyn Element> {
     let theme = appearance.theme();
@@ -635,7 +635,7 @@ fn render_mode_toggle(
     let local_segment = render_segment_button(
         "Local",
         !is_remote,
-        AIBlockAction::OrchestrateExecutionModeToggled {
+        AIBlockAction::RunAgentsExecutionModeToggled {
             action_id: action_id.clone(),
             is_remote: false,
         },
@@ -645,7 +645,7 @@ fn render_mode_toggle(
     let cloud_segment = render_segment_button(
         "Cloud",
         is_remote,
-        AIBlockAction::OrchestrateExecutionModeToggled {
+        AIBlockAction::RunAgentsExecutionModeToggled {
             action_id: action_id.clone(),
             is_remote: true,
         },
@@ -775,10 +775,10 @@ fn render_validation_error(
 /// suppressed). Two variants based on whether any environments are
 /// available to choose from.
 fn empty_env_recommendation_message(
-    state: &OrchestrateEditState,
+    state: &RunAgentsEditState,
     app: &AppContext,
 ) -> Option<String> {
-    let OrchestrateExecutionMode::Remote {
+    let RunAgentsExecutionMode::Remote {
         environment_id,
         worker_host,
         ..
@@ -789,7 +789,7 @@ fn empty_env_recommendation_message(
     if !environment_id.trim().is_empty() {
         return None;
     }
-    if !worker_host.eq_ignore_ascii_case(ORCHESTRATE_WARP_WORKER_HOST) {
+    if !worker_host.eq_ignore_ascii_case(RUN_AGENTS_WARP_WORKER_HOST) {
         return None;
     }
     let env_count = AgentConversationsModel::as_ref(app)
@@ -803,5 +803,5 @@ fn empty_env_recommendation_message(
 }
 
 #[cfg(test)]
-#[path = "orchestrate_tests.rs"]
+#[path = "run_agents_tests.rs"]
 mod tests;

@@ -1263,7 +1263,7 @@ fn launch_local_no_harness_child(
     executor: ModelHandle<StartAgentExecutor>,
     ctx: &mut ViewContext<PaneGroup>,
 ) -> Option<AIConversationId> {
-    log::info!("[orchestrate-debug] launching local Oz child with resolved model_id={model_id:?}");
+    let _ = model_id; // model_id is applied below via apply_child_model_id_override.
     let request_id = request.id;
     let HiddenChildAgentConversation {
         terminal_view: new_terminal_view,
@@ -1334,13 +1334,10 @@ fn launch_local_harness_child(
     terminal_pane_id: TerminalPaneId,
     request: StartAgentRequest,
     harness_type: String,
-    model_id: Option<String>,
+    _model_id: Option<String>,
     executor: ModelHandle<StartAgentExecutor>,
     ctx: &mut ViewContext<PaneGroup>,
 ) {
-    log::info!(
-        "[orchestrate-debug] launching local harness child harness_type={harness_type:?} resolved model_id={model_id:?}"
-    );
     let startup_directory = group.startup_path_for_new_session(Some(terminal_pane_id), ctx);
     let ai_client = ServerApiProvider::handle(ctx).as_ref(ctx).get_ai_client();
     let request_id = request.id;

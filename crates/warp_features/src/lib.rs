@@ -722,7 +722,7 @@ pub enum FeatureFlag {
     /// orchestrate tool replaces `start_agent` / `start_agent_v2` for
     /// orchestration-capable conversations. Layered on top of
     /// `OrchestrationV2`; has no effect when v2 is off.
-    OrchestrateTool,
+    RunAgentsTool,
 
     /// Renders a horizontal pill bar in the agent view pane header showing the
     /// orchestrator agent and all of its child agents, with click-to-switch
@@ -924,7 +924,7 @@ pub const DOGFOOD_FLAGS: &[FeatureFlag] = &[
     FeatureFlag::RememberFastForwardState,
     FeatureFlag::HOANotifications,
     FeatureFlag::OrchestrationV2,
-    FeatureFlag::OrchestrateTool,
+    FeatureFlag::RunAgentsTool,
     FeatureFlag::GeminiNotifications,
     FeatureFlag::LocalDockerSandbox,
     FeatureFlag::VerticalTabsSummaryMode,

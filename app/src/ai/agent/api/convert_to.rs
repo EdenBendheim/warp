@@ -692,7 +692,7 @@ impl TryFrom<AIAgentActionResult> for api::request::input::user_inputs::user_inp
             AIAgentActionResultType::AskUserQuestion(ask_user_question_result) => {
                 Some(ask_user_question_result.into())
             }
-            AIAgentActionResultType::Orchestrate(orchestrate_result) => {
+            AIAgentActionResultType::RunAgents(orchestrate_result) => {
                 Some(orchestrate_result.try_into()?)
             }
         };

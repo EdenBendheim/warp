@@ -98,7 +98,7 @@ pub enum AIAgentActionResultType {
 
     /// The result of an orchestrate tool call: launched (with per-agent
     /// outcomes), launch denied (Stage 2), failure, or cancelled.
-    Orchestrate(OrchestrateResult),
+    RunAgents(RunAgentsResult),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -165,7 +165,7 @@ impl Display for AIAgentActionResultType {
             AIAgentActionResultType::SendMessageToAgent(result) => result.fmt(f),
             AIAgentActionResultType::TransferShellCommandControlToUser(result) => result.fmt(f),
             AIAgentActionResultType::AskUserQuestion(result) => result.fmt(f),
-            AIAgentActionResultType::Orchestrate(result) => result.fmt(f),
+            AIAgentActionResultType::RunAgents(result) => result.fmt(f),
             AIAgentActionResultType::OpenCodeReview | AIAgentActionResultType::InitProject => {
                 Ok(())
             }
@@ -758,7 +758,7 @@ impl AIAgentActionResultType {
             AIAgentActionResultType::AskUserQuestion(_) => {
                 "The user's answers to clarifying questions"
             }
-            AIAgentActionResultType::Orchestrate(_) => {
+            AIAgentActionResultType::RunAgents(_) => {
                 "The result of an orchestrate batch of child agents"
             }
         }
@@ -798,7 +798,7 @@ impl AIAgentActionResultType {
                 | TransferShellCommandControlToUserResult::CommandFinished { .. },
             ) => true,
             Self::AskUserQuestion(AskUserQuestionResult::Success { .. }) => true,
-            Self::Orchestrate(OrchestrateResult::Launched { .. }) => true,
+            Self::RunAgents(RunAgentsResult::Launched { .. }) => true,
             _ => false,
         }
     }
@@ -828,9 +828,9 @@ impl AIAgentActionResultType {
             | Self::TransferShellCommandControlToUser(
                 TransferShellCommandControlToUserResult::Error(_),
             )
-            | Self::Orchestrate(
-                OrchestrateResult::Failure { .. } | OrchestrateResult::LaunchDenied { .. },
-            ) => true,
+            | Self::RunAgents(RunAgentsResult::Failure { .. } | RunAgentsResult::Denied { .. }) => {
+                true
+            }
             _ => false,
         }
     }
@@ -873,7 +873,7 @@ impl AIAgentActionResultType {
             | Self::SendMessageToAgent(SendMessageToAgentResult::Cancelled)
             // SkippedByAutoApprove is intentionally excluded: the agent should continue.
             | Self::AskUserQuestion(AskUserQuestionResult::Cancelled)
-            | Self::Orchestrate(OrchestrateResult::Cancelled) => true,
+            | Self::RunAgents(RunAgentsResult::Cancelled) => true,
             _ => false,
         }
     }
@@ -1244,24 +1244,24 @@ impl Display for StartAgentResult {
 
 /// The terminal outcome of an orchestrate tool call.
 ///
-/// Mirrors the proto `OrchestrateResult` oneof, with an additional
+/// Mirrors the proto `RunAgentsResult` oneof, with an additional
 /// `Cancelled` variant used internally by the action machinery when the
 /// user clicks Reject. The proto wire form for cancellation is the
 /// generic `ToolCallResult.Cancel` marker; the conversion code emits
 /// `ConvertToAPITypeError::Ignore` for `Cancelled` so the input
 /// interceptor can synthesize the marker on the next outbound input.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum OrchestrateResult {
+pub enum RunAgentsResult {
     /// Orchestration launched. Carries the resolved configuration and one
     /// `AgentOutcome` per `agent_run_configs[]` entry, in input order.
     Launched {
         model_id: String,
         harness_type: String,
-        execution_mode: OrchestrateLaunchedExecutionMode,
-        agents: Vec<OrchestrateAgentOutcome>,
+        execution_mode: RunAgentsLaunchedExecutionMode,
+        agents: Vec<RunAgentsAgentOutcome>,
     },
-    /// Stage 2: declined for a non-error reason (currently disapproval).
-    LaunchDenied { reason: String },
+    /// Declined for a non-error reason (currently disapproval).
+    Denied { reason: String },
     /// Actual error path: server-side validation rejected the call, or the
     /// client could not begin the launch sequence at all.
     Failure { error: String },
@@ -1272,7 +1272,7 @@ pub enum OrchestrateResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum OrchestrateLaunchedExecutionMode {
+pub enum RunAgentsLaunchedExecutionMode {
     Local,
     Remote {
         environment_id: String,
@@ -1281,30 +1281,28 @@ pub enum OrchestrateLaunchedExecutionMode {
     },
 }
 
-/// Per-agent outcome reported in `OrchestrateResult::Launched.agents`.
-/// Order mirrors the input order of `Orchestrate.agent_run_configs[]`,
+/// Per-agent outcome reported in `RunAgentsResult::Launched.agents`.
+/// Order mirrors the input order of `RunAgents.agent_run_configs[]`,
 /// regardless of which `CreateAgentTask` call returned first.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OrchestrateAgentOutcome {
+pub struct RunAgentsAgentOutcome {
     pub name: String,
-    /// LLM-supplied descriptive label; empty when unset.
-    pub title: String,
-    pub kind: OrchestrateAgentOutcomeKind,
+    pub kind: RunAgentsAgentOutcomeKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum OrchestrateAgentOutcomeKind {
+pub enum RunAgentsAgentOutcomeKind {
     Launched { agent_id: String },
     Failed { error: String },
 }
 
-impl Display for OrchestrateResult {
+impl Display for RunAgentsResult {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            OrchestrateResult::Launched { agents, .. } => {
+            RunAgentsResult::Launched { agents, .. } => {
                 let launched = agents
                     .iter()
-                    .filter(|a| matches!(a.kind, OrchestrateAgentOutcomeKind::Launched { .. }))
+                    .filter(|a| matches!(a.kind, RunAgentsAgentOutcomeKind::Launched { .. }))
                     .count();
                 write!(
                     f,
@@ -1312,11 +1310,11 @@ impl Display for OrchestrateResult {
                     agents.len()
                 )
             }
-            OrchestrateResult::LaunchDenied { reason } => {
+            RunAgentsResult::Denied { reason } => {
                 write!(f, "Orchestrate launch denied: {reason}")
             }
-            OrchestrateResult::Failure { error } => write!(f, "Orchestrate failure: {error}"),
-            OrchestrateResult::Cancelled => write!(f, "Orchestrate cancelled"),
+            RunAgentsResult::Failure { error } => write!(f, "Orchestrate failure: {error}"),
+            RunAgentsResult::Cancelled => write!(f, "Orchestrate cancelled"),
         }
     }
 }

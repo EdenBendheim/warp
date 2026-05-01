@@ -1,41 +1,40 @@
-//! Pure-data tests for `OrchestrateEditState` transition logic.
+//! Pure-data tests for `RunAgentsEditState` transition logic.
 //!
 //! Full UI integration tests (cards rendered into a live `AIBlock` view)
 //! belong under `crates/integration`. Stage 1 dispatch ordering / mid-batch /
 //! M=0 / pre-dispatch coverage lives in
-//! `crate::ai::blocklist::orchestrate_dispatch_tests`.
-use ai::agent::action::{OrchestrateAgentRunConfig, OrchestrateExecutionMode, OrchestrateRequest};
+//! `crate::ai::blocklist::run_agents_dispatch_tests`.
+use ai::agent::action::{RunAgentsAgentRunConfig, RunAgentsExecutionMode, RunAgentsRequest};
 
-use crate::ai::blocklist::block::OrchestrateEditState;
+use crate::ai::blocklist::block::RunAgentsEditState;
 
-fn make_request(harness: &str, mode: OrchestrateExecutionMode) -> OrchestrateRequest {
-    OrchestrateRequest {
+fn make_request(harness: &str, mode: RunAgentsExecutionMode) -> RunAgentsRequest {
+    RunAgentsRequest {
         summary: "summary".to_string(),
         base_prompt: "base".to_string(),
         skills: Vec::new(),
         model_id: "auto".to_string(),
         harness_type: harness.to_string(),
         execution_mode: mode,
-        agent_run_configs: vec![OrchestrateAgentRunConfig {
+        agent_run_configs: vec![RunAgentsAgentRunConfig {
             name: "child".to_string(),
             prompt: "do work".to_string(),
             title: "Child agent".to_string(),
         }],
-        auto_launch: false,
     }
 }
 
 #[test]
 fn local_to_cloud_initializes_remote_with_empty_environment() {
     let mut state =
-        OrchestrateEditState::from_request(&make_request("oz", OrchestrateExecutionMode::Local));
+        RunAgentsEditState::from_request(&make_request("oz", RunAgentsExecutionMode::Local));
     assert!(matches!(
         state.execution_mode,
-        OrchestrateExecutionMode::Local
+        RunAgentsExecutionMode::Local
     ));
 
     state.toggle_execution_mode_to_remote(true);
-    let OrchestrateExecutionMode::Remote {
+    let RunAgentsExecutionMode::Remote {
         environment_id,
         worker_host,
         computer_use_enabled,
@@ -50,9 +49,9 @@ fn local_to_cloud_initializes_remote_with_empty_environment() {
 
 #[test]
 fn cloud_to_local_drops_environment() {
-    let mut state = OrchestrateEditState::from_request(&make_request(
+    let mut state = RunAgentsEditState::from_request(&make_request(
         "oz",
-        OrchestrateExecutionMode::Remote {
+        RunAgentsExecutionMode::Remote {
             environment_id: "env-1".to_string(),
             worker_host: "warp".to_string(),
             computer_use_enabled: false,
@@ -61,16 +60,14 @@ fn cloud_to_local_drops_environment() {
     state.toggle_execution_mode_to_remote(false);
     assert!(matches!(
         state.execution_mode,
-        OrchestrateExecutionMode::Local
+        RunAgentsExecutionMode::Local
     ));
 }
 
 #[test]
 fn local_to_cloud_resets_opencode_to_oz() {
-    let mut state = OrchestrateEditState::from_request(&make_request(
-        "opencode",
-        OrchestrateExecutionMode::Local,
-    ));
+    let mut state =
+        RunAgentsEditState::from_request(&make_request("opencode", RunAgentsExecutionMode::Local));
     state.toggle_execution_mode_to_remote(true);
     assert_eq!(state.harness_type, "oz");
 }
@@ -81,9 +78,9 @@ fn cloud_without_env_no_longer_disables_accept() {
     // recommendation surfaced inline in the Cloud editor (rendered as
     // `ui_warning_color` text), not a hard validation error. The Accept
     // button stays enabled so users can launch with no environment.
-    let state = OrchestrateEditState::from_request(&make_request(
+    let state = RunAgentsEditState::from_request(&make_request(
         "oz",
-        OrchestrateExecutionMode::Remote {
+        RunAgentsExecutionMode::Remote {
             environment_id: String::new(),
             worker_host: "warp".to_string(),
             computer_use_enabled: false,
@@ -100,9 +97,9 @@ fn cloud_with_opencode_disables_accept() {
     // Bypassing the toggle helper that resets OpenCode to Oz so we can
     // exercise the validation gate's defensive coverage of the LLM-supplied
     // (Cloud, OpenCode) pairing.
-    let state = OrchestrateEditState::from_request(&make_request(
+    let state = RunAgentsEditState::from_request(&make_request(
         "opencode",
-        OrchestrateExecutionMode::Remote {
+        RunAgentsExecutionMode::Remote {
             environment_id: "env-1".to_string(),
             worker_host: "warp".to_string(),
             computer_use_enabled: false,
@@ -116,10 +113,8 @@ fn cloud_with_opencode_disables_accept() {
 #[test]
 fn local_with_any_harness_does_not_disable_accept() {
     for harness in ["oz", "claude", "gemini", "opencode"] {
-        let state = OrchestrateEditState::from_request(&make_request(
-            harness,
-            OrchestrateExecutionMode::Local,
-        ));
+        let state =
+            RunAgentsEditState::from_request(&make_request(harness, RunAgentsExecutionMode::Local));
         assert!(
             state.accept_disabled_reason().is_none(),
             "Local + {harness} should allow Accept"
@@ -130,9 +125,9 @@ fn local_with_any_harness_does_not_disable_accept() {
 #[test]
 fn cloud_with_env_and_non_opencode_harness_allows_accept() {
     for harness in ["oz", "claude", "gemini"] {
-        let state = OrchestrateEditState::from_request(&make_request(
+        let state = RunAgentsEditState::from_request(&make_request(
             harness,
-            OrchestrateExecutionMode::Remote {
+            RunAgentsExecutionMode::Remote {
                 environment_id: "env-1".to_string(),
                 worker_host: "warp".to_string(),
                 computer_use_enabled: false,
@@ -148,26 +143,26 @@ fn cloud_with_env_and_non_opencode_harness_allows_accept() {
 #[test]
 fn set_environment_id_no_op_in_local_mode() {
     let mut state =
-        OrchestrateEditState::from_request(&make_request("oz", OrchestrateExecutionMode::Local));
+        RunAgentsEditState::from_request(&make_request("oz", RunAgentsExecutionMode::Local));
     state.set_environment_id("env-1".to_string());
     assert!(matches!(
         state.execution_mode,
-        OrchestrateExecutionMode::Local
+        RunAgentsExecutionMode::Local
     ));
 }
 
 #[test]
 fn set_environment_id_updates_remote() {
-    let mut state = OrchestrateEditState::from_request(&make_request(
+    let mut state = RunAgentsEditState::from_request(&make_request(
         "oz",
-        OrchestrateExecutionMode::Remote {
+        RunAgentsExecutionMode::Remote {
             environment_id: "old".to_string(),
             worker_host: "warp".to_string(),
             computer_use_enabled: false,
         },
     ));
     state.set_environment_id("new-env".to_string());
-    let OrchestrateExecutionMode::Remote { environment_id, .. } = state.execution_mode else {
+    let RunAgentsExecutionMode::Remote { environment_id, .. } = state.execution_mode else {
         panic!("expected Remote");
     };
     assert_eq!(environment_id, "new-env");
@@ -177,13 +172,13 @@ fn set_environment_id_updates_remote() {
 fn to_request_round_trips_request_fields() {
     let req = make_request(
         "claude",
-        OrchestrateExecutionMode::Remote {
+        RunAgentsExecutionMode::Remote {
             environment_id: "env-2".to_string(),
             worker_host: "warp".to_string(),
             computer_use_enabled: true,
         },
     );
-    let state = OrchestrateEditState::from_request(&req);
+    let state = RunAgentsEditState::from_request(&req);
     let round_tripped = state.to_request();
     assert_eq!(round_tripped.summary, req.summary);
     assert_eq!(round_tripped.base_prompt, req.base_prompt);
@@ -191,24 +186,20 @@ fn to_request_round_trips_request_fields() {
     assert_eq!(round_tripped.harness_type, req.harness_type);
     assert_eq!(round_tripped.execution_mode, req.execution_mode);
     assert_eq!(round_tripped.agent_run_configs, req.agent_run_configs);
-    assert!(
-        !round_tripped.auto_launch,
-        "Stage 1 always passes auto_launch=false"
-    );
 }
 
 #[test]
 fn local_to_cloud_idempotent_when_already_remote() {
-    let mut state = OrchestrateEditState::from_request(&make_request(
+    let mut state = RunAgentsEditState::from_request(&make_request(
         "oz",
-        OrchestrateExecutionMode::Remote {
+        RunAgentsExecutionMode::Remote {
             environment_id: "env-1".to_string(),
             worker_host: "warp".to_string(),
             computer_use_enabled: true,
         },
     ));
     state.toggle_execution_mode_to_remote(true);
-    let OrchestrateExecutionMode::Remote {
+    let RunAgentsExecutionMode::Remote {
         environment_id,
         computer_use_enabled,
         ..

@@ -1544,52 +1544,50 @@ pub(crate) fn convert_tool_call_result_to_input(
                 context,
             })
         }
-        Some(ToolCallResultType::OrchestrateResult(result)) => {
+        Some(ToolCallResultType::RunAgentsResult(result)) => {
             use ai::agent::action_result::{
-                OrchestrateAgentOutcome, OrchestrateAgentOutcomeKind,
-                OrchestrateLaunchedExecutionMode, OrchestrateResult,
+                RunAgentsAgentOutcome, RunAgentsAgentOutcomeKind, RunAgentsLaunchedExecutionMode,
+                RunAgentsResult,
             };
-            let orchestrate_result = match &result.outcome {
-                Some(api::orchestrate_result::Outcome::Launched(launched)) => {
-                    let execution_mode = match &launched.execution_mode {
-                        Some(api::orchestrate_result::launched::ExecutionMode::Remote(remote)) => {
-                            OrchestrateLaunchedExecutionMode::Remote {
-                                environment_id: remote.environment_id.clone(),
-                                worker_host: remote.worker_host.clone(),
-                                computer_use_enabled: remote.computer_use_enabled,
-                            }
-                        }
-                        Some(api::orchestrate_result::launched::ExecutionMode::Local(_)) | None => {
-                            OrchestrateLaunchedExecutionMode::Local
-                        }
+            let run_agents_result = match &result.outcome {
+                Some(api::run_agents_result::Outcome::Launched(launched)) => {
+                    let execution_mode = match &launched.resolved_execution_mode {
+                        Some(api::run_agents_result::launched::ResolvedExecutionMode::Remote(
+                            remote,
+                        )) => RunAgentsLaunchedExecutionMode::Remote {
+                            environment_id: remote.environment_id.clone(),
+                            worker_host: remote.worker_host.clone(),
+                            computer_use_enabled: remote.computer_use_enabled,
+                        },
+                        Some(api::run_agents_result::launched::ResolvedExecutionMode::Local(_))
+                        | None => RunAgentsLaunchedExecutionMode::Local,
                     };
                     let agents = launched
                         .agents
                         .iter()
-                        .map(|outcome| OrchestrateAgentOutcome {
+                        .map(|outcome| RunAgentsAgentOutcome {
                             name: outcome.name.clone(),
-                            title: outcome.title.clone(),
                             kind: match &outcome.result {
-                                Some(api::orchestrate_result::agent_outcome::Result::Launched(
+                                Some(api::run_agents_result::agent_outcome::Result::Launched(
                                     launched_agent,
-                                )) => OrchestrateAgentOutcomeKind::Launched {
+                                )) => RunAgentsAgentOutcomeKind::Launched {
                                     agent_id: launched_agent.agent_id.clone(),
                                 },
-                                Some(api::orchestrate_result::agent_outcome::Result::Failed(
+                                Some(api::run_agents_result::agent_outcome::Result::Failed(
                                     failed,
-                                )) => OrchestrateAgentOutcomeKind::Failed {
+                                )) => RunAgentsAgentOutcomeKind::Failed {
                                     error: failed.error.clone(),
                                 },
-                                None => OrchestrateAgentOutcomeKind::Failed {
+                                None => RunAgentsAgentOutcomeKind::Failed {
                                     error: String::new(),
                                 },
                             },
                         })
                         .collect();
-                    OrchestrateResult::Launched {
-                        model_id: launched.model_id.clone(),
+                    RunAgentsResult::Launched {
+                        model_id: launched.resolved_model_id.clone(),
                         harness_type: launched
-                            .harness
+                            .resolved_harness
                             .as_ref()
                             .map(|h| h.r#type.clone())
                             .unwrap_or_default(),
@@ -1597,23 +1595,21 @@ pub(crate) fn convert_tool_call_result_to_input(
                         agents,
                     }
                 }
-                Some(api::orchestrate_result::Outcome::LaunchDenied(denied)) => {
-                    OrchestrateResult::LaunchDenied {
-                        reason: denied.reason.clone(),
-                    }
-                }
-                Some(api::orchestrate_result::Outcome::Failure(failure)) => {
-                    OrchestrateResult::Failure {
+                Some(api::run_agents_result::Outcome::Denied(denied)) => RunAgentsResult::Denied {
+                    reason: denied.reason.clone(),
+                },
+                Some(api::run_agents_result::Outcome::Failure(failure)) => {
+                    RunAgentsResult::Failure {
                         error: failure.error.clone(),
                     }
                 }
-                None => OrchestrateResult::Cancelled,
+                None => RunAgentsResult::Cancelled,
             };
             Some(AIAgentInput::ActionResult {
                 result: AIAgentActionResult {
                     id: tool_call_id.into(),
                     task_id: task_id.clone(),
-                    result: AIAgentActionResultType::Orchestrate(orchestrate_result),
+                    result: AIAgentActionResultType::RunAgents(run_agents_result),
                 },
                 context,
             })
@@ -1752,9 +1748,9 @@ fn create_cancelled_result_for_tool_call(
         ToolType::SendMessageToAgent(_) => {
             AIAgentActionResultType::SendMessageToAgent(SendMessageToAgentResult::Cancelled)
         }
-        ToolType::Orchestrate(_) => AIAgentActionResultType::Orchestrate(
-            ai::agent::action_result::OrchestrateResult::Cancelled,
-        ),
+        ToolType::RunAgents(_) => {
+            AIAgentActionResultType::RunAgents(ai::agent::action_result::RunAgentsResult::Cancelled)
+        }
         // These tools are deprecated.
         ToolType::SuggestCreatePlan(_) | ToolType::SuggestPlan(_) => return None,
     };

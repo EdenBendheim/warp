@@ -183,9 +183,9 @@ use crate::view_components::DismissibleToast;
 use crate::workspace::{ForkAIConversationParams, ForkedConversationDestination, WorkspaceAction};
 use crate::{report_error, report_if_error, ToastStack};
 use ai::agent::action::{AskUserQuestionItem, InsertReviewComment};
-use ai::agent::action::{OrchestrateAgentRunConfig, OrchestrateExecutionMode, OrchestrateRequest};
+use ai::agent::action::{RunAgentsAgentRunConfig, RunAgentsExecutionMode, RunAgentsRequest};
 use ai::agent::action_result::{
-    OrchestrateAgentOutcome, OrchestrateAgentOutcomeKind, OrchestrateLaunchedExecutionMode,
+    RunAgentsAgentOutcome, RunAgentsAgentOutcomeKind, RunAgentsLaunchedExecutionMode,
 };
 use warp_cli::agent::Harness;
 
@@ -260,18 +260,18 @@ const DISPATCHED_REQUESTED_EDIT_KEYMAP_CONTEXT: &str = "PendingAIRequestedEdits"
 
 /// Keymap context flag set when at least one orchestrate confirmation
 /// card on this `AIBlock` has its inline editor open. Used to gate the
-/// `escape` keybinding for `OrchestrateDiscardEditsCurrentCard` so it
+/// `escape` keybinding for `RunAgentsDiscardEditsCurrentCard` so it
 /// only fires when an editor is actually open and doesn't shadow Esc
 /// elsewhere.
-pub(super) const ORCHESTRATE_EDITOR_OPEN: &str = "OrchestrateEditorOpen";
+pub(super) const RUN_AGENTS_EDITOR_OPEN: &str = "OrchestrateEditorOpen";
 
 /// Round 6 follow-up B1: display label for the synthetic "(no
 /// environment)" item at the top of the orchestrate Cloud-mode
 /// environment picker. Selecting this item dispatches
-/// `OrchestrateEnvironmentChanged` with an empty `environment_id`,
+/// `RunAgentsEnvironmentChanged` with an empty `environment_id`,
 /// which clears any previously chosen environment and reverts the
 /// state to no-env.
-pub(super) const ORCHESTRATE_ENV_NONE_LABEL: &str = "(no environment)";
+pub(super) const RUN_AGENTS_ENV_NONE_LABEL: &str = "(no environment)";
 
 const AUTO_EXPAND_REQUESTED_COMMAND_DELAY: std::time::Duration =
     std::time::Duration::from_millis(3000);
@@ -295,37 +295,37 @@ pub fn init(app: &mut AppContext) {
         ),
         // Orchestrate confirmation-card keybindings (P1.2). Each
         // resolves to the most-recent pending Orchestrate action via
-        // `current_orchestrate_action_id` at dispatch time; when no
+        // `current_run_agents_action_id` at dispatch time; when no
         // such card is pending the actions are no-ops, mirroring how
         // `ExecuteNextPendingAction` behaves with no pending action.
         FixedBinding::new(
             "cmdorctrl-e",
-            AIBlockAction::OrchestrateToggleEditCurrentCard,
+            AIBlockAction::RunAgentsToggleEditCurrentCard,
             id!(AIBlock::ui_name()) & id!(HAS_PENDING_ACTION),
         ),
         // P4.10: Accept = Enter. The `ExecuteNextPendingAction`
         // binding above also fires on Enter; its handler delegates to
-        // `handle_orchestrate_accept` when the pending action is an
+        // `handle_run_agents_accept` when the pending action is an
         // orchestrate tool call. This keymap entry is therefore a
         // belt-and-suspenders fallback wired to the same key so Enter
         // is the canonical Accept shortcut. The Accept button chip
         // reflects this (rendered as the Enter glyph).
         FixedBinding::new(
             "enter",
-            AIBlockAction::OrchestrateAcceptCurrentCard,
+            AIBlockAction::RunAgentsAcceptCurrentCard,
             id!(AIBlock::ui_name()) & id!(HAS_PENDING_ACTION),
         ),
         // Esc closes the orchestrate inline editor only when one is
-        // open, gated on `ORCHESTRATE_EDITOR_OPEN` so we don't shadow
+        // open, gated on `RUN_AGENTS_EDITOR_OPEN` so we don't shadow
         // Esc elsewhere.
         FixedBinding::new(
             "escape",
-            AIBlockAction::OrchestrateDiscardEditsCurrentCard,
-            id!(AIBlock::ui_name()) & id!(ORCHESTRATE_EDITOR_OPEN),
+            AIBlockAction::RunAgentsDiscardEditsCurrentCard,
+            id!(AIBlock::ui_name()) & id!(RUN_AGENTS_EDITOR_OPEN),
         ),
         // P5.1: Esc is intentionally NOT bound to Reject. Reject's
         // documented shortcut is `Ctrl-C`. The escape binding above
-        // (gated on ORCHESTRATE_EDITOR_OPEN) handles editor discard;
+        // (gated on RUN_AGENTS_EDITOR_OPEN) handles editor discard;
         // outside the editor, Esc is a no-op for orchestrate cards.
     ]);
 
@@ -403,29 +403,29 @@ struct ActionButtons {
 /// Spec references: TECH.md §8 ("Client: confirmation card"), PRODUCT.md
 /// "Confirmation card actions".
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct OrchestrateEditState {
+pub(super) struct RunAgentsEditState {
     /// Whether the inline editor is currently visible. Toggled by the Edit
     /// button.
     pub(super) is_editor_open: bool,
     /// Currently-selected model_id for run-wide config. Initialized from
-    /// the LLM-supplied `OrchestrateRequest.model_id`.
+    /// the LLM-supplied `RunAgentsRequest.model_id`.
     pub(super) model_id: String,
     /// Currently-selected harness_type. Initialized from the LLM-supplied
-    /// `OrchestrateRequest.harness_type`.
+    /// `RunAgentsRequest.harness_type`.
     pub(super) harness_type: String,
     /// Currently-selected execution mode (Local or Remote{env, host, ...}).
-    pub(super) execution_mode: OrchestrateExecutionMode,
+    pub(super) execution_mode: RunAgentsExecutionMode,
     /// Per-agent run configs (passed straight through; not user-editable in
     /// Stage 1).
-    pub(super) agent_run_configs: Vec<OrchestrateAgentRunConfig>,
+    pub(super) agent_run_configs: Vec<RunAgentsAgentRunConfig>,
     /// Run-wide base prompt (passed through verbatim).
     pub(super) base_prompt: String,
     /// Summary text rendered in the title row.
     pub(super) summary: String,
 }
 
-impl OrchestrateEditState {
-    pub(super) fn from_request(req: &OrchestrateRequest) -> Self {
+impl RunAgentsEditState {
+    pub(super) fn from_request(req: &RunAgentsRequest) -> Self {
         Self {
             is_editor_open: false,
             model_id: req.model_id.clone(),
@@ -450,19 +450,19 @@ impl OrchestrateEditState {
             // worker_host="warp" (TODO(QUALITY-569 fast-follow): expose
             // worker_host as an editable picker).
             if !self.execution_mode.is_remote() {
-                self.execution_mode = OrchestrateExecutionMode::Remote {
+                self.execution_mode = RunAgentsExecutionMode::Remote {
                     environment_id: String::new(),
                     worker_host: "warp".to_string(),
                     computer_use_enabled: false,
                 };
             }
         } else {
-            self.execution_mode = OrchestrateExecutionMode::Local;
+            self.execution_mode = RunAgentsExecutionMode::Local;
         }
     }
 
     pub(super) fn set_environment_id(&mut self, environment_id: String) {
-        if let OrchestrateExecutionMode::Remote {
+        if let RunAgentsExecutionMode::Remote {
             environment_id: id, ..
         } = &mut self.execution_mode
         {
@@ -473,12 +473,12 @@ impl OrchestrateEditState {
     /// Returns Some(reason) if Accept must be disabled, None if it's
     /// enabled. Round 6 follow-up: Cloud-without-env is no longer a
     /// hard block — it's now a soft recommendation rendered in
-    /// `render_editor` (see `OrchestrateExecutionMode::Remote`
+    /// `render_editor` (see `RunAgentsExecutionMode::Remote`
     /// + empty-env recommendation copy). The remaining hard block is
     /// OpenCode+Cloud, which is still unsupported per spec §8.
     pub(super) fn accept_disabled_reason(&self) -> Option<&'static str> {
         match &self.execution_mode {
-            OrchestrateExecutionMode::Remote { .. }
+            RunAgentsExecutionMode::Remote { .. }
                 if self.harness_type.eq_ignore_ascii_case("opencode") =>
             {
                 Some(
@@ -489,8 +489,8 @@ impl OrchestrateEditState {
         }
     }
 
-    pub(super) fn to_request(&self) -> OrchestrateRequest {
-        OrchestrateRequest {
+    pub(super) fn to_request(&self) -> RunAgentsRequest {
+        RunAgentsRequest {
             summary: self.summary.clone(),
             base_prompt: self.base_prompt.clone(),
             skills: Vec::new(),
@@ -498,7 +498,6 @@ impl OrchestrateEditState {
             harness_type: self.harness_type.clone(),
             execution_mode: self.execution_mode.clone(),
             agent_run_configs: self.agent_run_configs.clone(),
-            auto_launch: false,
         }
     }
 }
@@ -511,10 +510,10 @@ impl OrchestrateEditState {
 /// inside the inline editor, and the lazily-created picker `ViewHandle`s
 /// for the inline editor (model/harness `Dropdown`s and a filterable env
 /// `FilterableDropdown`). Each field is `Option<...>` so the entry can be
-/// `Default`-constructed before `ensure_orchestrate_card_buttons` /
-/// `ensure_orchestrate_pickers` populate it under a `&mut ViewContext`.
+/// `Default`-constructed before `ensure_run_agents_card_buttons` /
+/// `ensure_run_agents_pickers` populate it under a `&mut ViewContext`.
 #[derive(Default, Clone)]
-pub(super) struct OrchestrateCardHandles {
+pub(super) struct RunAgentsCardHandles {
     pub(super) reject_button: Option<CompactibleActionButton>,
     pub(super) edit_button: Option<CompactibleActionButton>,
     pub(super) accept_button: Option<CompactibleSplitActionButton>,
@@ -534,8 +533,8 @@ pub(super) struct OrchestrateCardHandles {
 /// Snapshot captured at orchestrate-Accept time used for two purposes:
 ///
 /// 1. **Idempotency guard.** The presence of an entry in
-///    `AIBlock::orchestrate_spawning` for a given `AIAgentActionId`
-///    indicates that `handle_orchestrate_accept` has already begun
+///    `AIBlock::run_agents_spawning` for a given `AIAgentActionId`
+///    indicates that `handle_run_agents_accept` has already begun
 ///    dispatching this action's children. Any subsequent invocation
 ///    (Enter keyboard auto-repeat, double-click on Accept, repeated
 ///    `ExecuteNextPendingAction` delegation) hits the guard at the top
@@ -543,12 +542,12 @@ pub(super) struct OrchestrateCardHandles {
 /// 2. **Source for the in-flight "Spawning N agents…" card.** While the
 ///    async dispatch batch is still running (Local+harness can take
 ///    hundreds of ms because `launch_local_harness_child` performs a
-///    network call), `render_orchestrate` reads this map to render an
+///    network call), `render_run_agents` reads this map to render an
 ///    in-flight status card in place of the confirmation card. Once the
 ///    async outcome callback fires it removes the entry and the
-///    terminal `OrchestrateResult` card takes over.
+///    terminal `RunAgentsResult` card takes over.
 #[derive(Debug, Clone)]
-pub(super) struct OrchestrateSpawningSnapshot {
+pub(super) struct RunAgentsSpawningSnapshot {
     /// Number of agents being spawned. Drives pluralization of the
     /// in-flight card label ("Spawning 1 agent…" vs "Spawning N
     /// agents…"), matching the terminal-state pluralization.
@@ -1166,19 +1165,19 @@ pub struct AIBlock {
     /// Per-action edit state for `orchestrate` tool calls. Lazily
     /// populated when the user first opens the inline editor on a
     /// confirmation card. Keyed by `AIAgentActionId`.
-    orchestrate_edit_states: HashMap<AIAgentActionId, OrchestrateEditState>,
+    run_agents_edit_states: HashMap<AIAgentActionId, RunAgentsEditState>,
     /// Per-action `MouseStateHandle`s for the `orchestrate` confirmation
     /// card's interactive controls. Lazily populated alongside
-    /// `orchestrate_edit_states`.
-    orchestrate_card_handles: HashMap<AIAgentActionId, OrchestrateCardHandles>,
+    /// `run_agents_edit_states`.
+    run_agents_card_handles: HashMap<AIAgentActionId, RunAgentsCardHandles>,
     /// Per-action snapshot of an in-flight orchestrate dispatch. Inserted
-    /// at the top of `handle_orchestrate_accept` and removed by the async
-    /// outcome callback right before `apply_orchestrate_action_result`.
+    /// at the top of `handle_run_agents_accept` and removed by the async
+    /// outcome callback right before `apply_run_agents_action_result`.
     /// Doubles as the idempotency guard for repeat Accept invocations
     /// (Enter auto-repeat, double-click) and the source for the
     /// "Spawning N agents…" in-flight card rendered in place of the
     /// confirmation card while the dispatch is still running.
-    orchestrate_spawning: HashMap<AIAgentActionId, OrchestrateSpawningSnapshot>,
+    run_agents_spawning: HashMap<AIAgentActionId, RunAgentsSpawningSnapshot>,
 
     /// Handle for the background link detection task, kept so we can abort a previous
     /// detection when a new one is spawned (e.g. on shell data change).
@@ -1597,9 +1596,9 @@ impl AIBlock {
             aws_bedrock_credentials_error_view: None,
             imported_comments: Default::default(),
             has_imported_comments: false,
-            orchestrate_edit_states: Default::default(),
-            orchestrate_card_handles: Default::default(),
-            orchestrate_spawning: Default::default(),
+            run_agents_edit_states: Default::default(),
+            run_agents_card_handles: Default::default(),
+            run_agents_spawning: Default::default(),
             link_detection_handle: None,
             #[cfg(feature = "local_fs")]
             resolved_code_block_paths: Default::default(),
@@ -2098,8 +2097,8 @@ impl AIBlock {
             // Ensure the per-action Reject/Edit/Accept button views exist so
             // the orchestrate confirmation card can render them on its first
             // frame. Pickers stay lazy (built on first Edit-open).
-            if matches!(&action.action, AIAgentActionType::Orchestrate(_)) {
-                self.ensure_orchestrate_card_buttons(&action.id, ctx);
+            if matches!(&action.action, AIAgentActionType::RunAgents(_)) {
+                self.ensure_run_agents_card_buttons(&action.id, ctx);
             }
 
             // Ensure a button component exists for UseComputer actions.
@@ -5982,70 +5981,70 @@ pub enum AIBlockAction {
     // ----- orchestrate tool call confirmation card -----
     /// Reject the orchestrate tool call. Cancels the action via the
     /// existing `cancel_action_with_id` path; no proto fan-out happens
-    /// because `OrchestrateResult::Cancelled` is `ConvertToAPITypeError::Ignore`.
-    OrchestrateReject {
+    /// because `RunAgentsResult::Cancelled` is `ConvertToAPITypeError::Ignore`.
+    RunAgentsReject {
         action_id: AIAgentActionId,
     },
-    /// Accept the orchestrate tool call. Builds an `OrchestrateRequest`
+    /// Accept the orchestrate tool call. Builds an `RunAgentsRequest`
     /// from the current edit state, dispatches per-agent
     /// `CreateAgentTask` calls in parallel via `dispatch_orchestrate`,
-    /// then injects the resulting `OrchestrateResult` into the action
+    /// then injects the resulting `RunAgentsResult` into the action
     /// model.
-    OrchestrateAccept {
+    RunAgentsAccept {
         action_id: AIAgentActionId,
     },
     /// Toggle the inline editor open/closed for an orchestrate card.
     /// Lazily initializes per-action edit state on first toggle-open.
-    OrchestrateToggleEdit {
+    RunAgentsToggleEdit {
         action_id: AIAgentActionId,
     },
     /// Toggle Local <-> Cloud execution mode in the inline editor.
-    OrchestrateExecutionModeToggled {
+    RunAgentsExecutionModeToggled {
         action_id: AIAgentActionId,
         is_remote: bool,
     },
     /// User selected a different model in the inline editor.
-    OrchestrateModelChanged {
+    RunAgentsModelChanged {
         action_id: AIAgentActionId,
         model_id: String,
     },
     /// User selected a different harness in the inline editor.
-    OrchestrateHarnessChanged {
+    RunAgentsHarnessChanged {
         action_id: AIAgentActionId,
         harness_type: String,
     },
     /// User selected a different environment_id in the inline editor.
-    OrchestrateEnvironmentChanged {
+    RunAgentsEnvironmentChanged {
         action_id: AIAgentActionId,
         environment_id: String,
     },
     /// User clicked the Accept split-button's chevron-down dropdown
     /// affordance. Currently a no-op; the dropdown content is a
     /// fast-follow per the Stage 1 visual rework spec.
-    OrchestrateAcceptMenuToggled {
+    RunAgentsAcceptMenuToggled {
         action_id: AIAgentActionId,
     },
 
     /// Keybinding-friendly variant: accept the most-recent pending
     /// orchestrate card. Resolved at dispatch time via
-    /// [`AIBlock::current_orchestrate_action_id`]; no-op when there
+    /// [`AIBlock::current_run_agents_action_id`]; no-op when there
     /// isn't one. Bound to `\u2325\u21b5` (alt-enter) at app init.
-    OrchestrateAcceptCurrentCard,
+    RunAgentsAcceptCurrentCard,
     /// Keybinding-friendly variant: reject the most-recent pending
     /// orchestrate card. Currently unbound (the universal ctrl-c
     /// cancel path covers reject) but exposed for symmetry with the
     /// other Current-Card variants.
-    OrchestrateRejectCurrentCard,
+    RunAgentsRejectCurrentCard,
     /// Keybinding-friendly variant: toggle the inline editor on the
     /// most-recent pending orchestrate card. Bound to `\u2318E` /
     /// `Ctrl-E` at app init.
-    OrchestrateToggleEditCurrentCard,
+    RunAgentsToggleEditCurrentCard,
     /// Keybinding-friendly variant: close ("discard edits") the inline
     /// editor on the most-recent pending orchestrate card whose editor
     /// is open. Bound to `Esc` at app init, gated on the
-    /// `ORCHESTRATE_EDITOR_OPEN` keymap context so the binding only
+    /// `RUN_AGENTS_EDITOR_OPEN` keymap context so the binding only
     /// fires when an editor is actually open.
-    OrchestrateDiscardEditsCurrentCard,
+    RunAgentsDiscardEditsCurrentCard,
 }
 
 impl TypedActionView for AIBlock {
@@ -6143,20 +6142,12 @@ impl TypedActionView for AIBlock {
                 self.cancel_action(action_id, ctx);
             }
             AIBlockAction::ExecuteNextPendingAction => {
-                // P4.10: if the next pending action is an orchestrate
-                // tool call, delegate to the orchestrate accept handler
-                // so Enter triggers the same path as clicking Accept on
-                // the confirmation card.
-                //
-                // Round 7 hotfix diagnostic: log fires unconditionally so
-                // we can tell whether Enter is reaching the dispatcher at
-                // all post-dropdown-interaction.
-                log::info!("[orchestrate-debug] ExecuteNextPendingAction fired");
-                if let Some(orchestrate_id) = self.current_orchestrate_action_id(ctx) {
-                    log::info!(
-                        "[orchestrate-debug] ExecuteNextPendingAction -> orchestrate accept (action_id={orchestrate_id:?})"
-                    );
-                    self.handle_orchestrate_accept(&orchestrate_id, ctx);
+                // P4.10: if the next pending action is a RunAgents tool
+                // call, delegate to the RunAgents accept handler so
+                // Enter triggers the same path as clicking Accept on the
+                // confirmation card.
+                if let Some(run_agents_id) = self.current_run_agents_action_id(ctx) {
+                    self.handle_run_agents_accept(&run_agents_id, ctx);
                 } else {
                     self.action_model.update(ctx, |action_model, ctx| {
                         action_model.execute_next_action_for_user(self.conversation_id(), ctx)
@@ -6711,32 +6702,32 @@ impl TypedActionView for AIBlock {
                     initial_index,
                 });
             }
-            AIBlockAction::OrchestrateReject { action_id } => {
+            AIBlockAction::RunAgentsReject { action_id } => {
                 self.cancel_action(action_id, ctx);
             }
-            AIBlockAction::OrchestrateToggleEdit { action_id } => {
-                self.handle_orchestrate_toggle_edit(action_id, ctx);
+            AIBlockAction::RunAgentsToggleEdit { action_id } => {
+                self.handle_run_agents_toggle_edit(action_id, ctx);
             }
-            AIBlockAction::OrchestrateExecutionModeToggled {
+            AIBlockAction::RunAgentsExecutionModeToggled {
                 action_id,
                 is_remote,
             } => {
-                if let Some(state) = self.orchestrate_edit_states.get_mut(action_id) {
+                if let Some(state) = self.run_agents_edit_states.get_mut(action_id) {
                     state.toggle_execution_mode_to_remote(*is_remote);
                 }
                 // The Local→Cloud transition can programmatically reset
                 // OpenCode→Oz; keep the harness dropdown's display in sync
                 // with that change so the user sees the active harness.
-                self.sync_orchestrate_picker_selections(action_id, ctx);
+                self.sync_run_agents_picker_selections(action_id, ctx);
             }
-            AIBlockAction::OrchestrateModelChanged {
+            AIBlockAction::RunAgentsModelChanged {
                 action_id,
                 model_id,
             } => {
-                if let Some(state) = self.orchestrate_edit_states.get_mut(action_id) {
+                if let Some(state) = self.run_agents_edit_states.get_mut(action_id) {
                     state.model_id = model_id.clone();
                 }
-                // Note: do NOT call `sync_orchestrate_picker_selections`
+                // Note: do NOT call `sync_run_agents_picker_selections`
                 // here. This action is dispatched synchronously from the
                 // model_picker dropdown's `select_action_and_close` while
                 // its `update_view` is mid-execution; calling
@@ -6746,87 +6737,62 @@ impl TypedActionView for AIBlock {
                 // `Dropdown::new`) updates the displayed selection after
                 // the dispatch chain unwinds.
             }
-            AIBlockAction::OrchestrateHarnessChanged {
+            AIBlockAction::RunAgentsHarnessChanged {
                 action_id,
                 harness_type,
             } => {
-                if let Some(state) = self.orchestrate_edit_states.get_mut(action_id) {
+                if let Some(state) = self.run_agents_edit_states.get_mut(action_id) {
                     state.harness_type = harness_type.clone();
                 }
-                // See note on OrchestrateModelChanged above.
+                // See note on RunAgentsModelChanged above.
             }
-            AIBlockAction::OrchestrateEnvironmentChanged {
+            AIBlockAction::RunAgentsEnvironmentChanged {
                 action_id,
                 environment_id,
             } => {
-                if let Some(state) = self.orchestrate_edit_states.get_mut(action_id) {
+                if let Some(state) = self.run_agents_edit_states.get_mut(action_id) {
                     state.set_environment_id(environment_id.clone());
                 }
-                // See note on OrchestrateModelChanged above.
+                // See note on RunAgentsModelChanged above.
             }
-            AIBlockAction::OrchestrateAccept { action_id } => {
-                // Round 7 hotfix: diagnostic for the post-dropdown Accept
-                // bug. If the user clicks Accept and this log doesn't
-                // appear, the click is being absorbed before reaching the
-                // AIBlock action dispatcher (e.g. by a stale dropdown
-                // overlay or focus state).
-                log::info!(
-                    "[orchestrate-debug] OrchestrateAccept handler fired (button click path) action_id={action_id:?}"
-                );
-                self.handle_orchestrate_accept(action_id, ctx);
+            AIBlockAction::RunAgentsAccept { action_id } => {
+                self.handle_run_agents_accept(action_id, ctx);
             }
-            AIBlockAction::OrchestrateAcceptMenuToggled { action_id: _ } => {
+            AIBlockAction::RunAgentsAcceptMenuToggled { action_id: _ } => {
                 // TODO(QUALITY-569 fast-follow): wire the Accept split
                 // button's chevron-down dropdown content. The visual
                 // structure already matches the Figma; the menu items
                 // (e.g. "Accept and \u2026") have not been speced yet.
             }
-            AIBlockAction::OrchestrateAcceptCurrentCard => {
-                let resolved = self.current_orchestrate_action_id(ctx);
-                log::info!(
-                    "[orchestrate-debug] OrchestrateAcceptCurrentCard fired: resolved action_id={resolved:?}"
-                );
-                if let Some(action_id) = resolved {
-                    self.handle_orchestrate_accept(&action_id, ctx);
+            AIBlockAction::RunAgentsAcceptCurrentCard => {
+                if let Some(action_id) = self.current_run_agents_action_id(ctx) {
+                    self.handle_run_agents_accept(&action_id, ctx);
                 }
             }
-            AIBlockAction::OrchestrateRejectCurrentCard => {
+            AIBlockAction::RunAgentsRejectCurrentCard => {
                 // P5.1: Reject's keyboard shortcut is `Ctrl-C` (the
                 // universal cancel path), not Esc. This action is
                 // currently unbound from any keystroke; it remains
                 // here for symmetry with the other Current-Card
                 // variants and in case future code paths dispatch it
-                // programmatically. Diagnostic log retained from
-                // P4.11 for parity with other handlers.
-                let resolved = self.current_orchestrate_action_id(ctx);
-                log::info!(
-                    "[orchestrate-debug] OrchestrateRejectCurrentCard fired: resolved action_id={resolved:?}"
-                );
-                if let Some(action_id) = resolved {
+                // programmatically.
+                if let Some(action_id) = self.current_run_agents_action_id(ctx) {
                     self.cancel_action(&action_id, ctx);
                 }
             }
-            AIBlockAction::OrchestrateToggleEditCurrentCard => {
-                let resolved = self.current_orchestrate_action_id(ctx);
-                log::info!(
-                    "[orchestrate-debug] OrchestrateToggleEditCurrentCard fired: resolved action_id={resolved:?}"
-                );
-                if let Some(action_id) = resolved {
-                    self.handle_orchestrate_toggle_edit(&action_id, ctx);
+            AIBlockAction::RunAgentsToggleEditCurrentCard => {
+                if let Some(action_id) = self.current_run_agents_action_id(ctx) {
+                    self.handle_run_agents_toggle_edit(&action_id, ctx);
                 }
             }
-            AIBlockAction::OrchestrateDiscardEditsCurrentCard => {
+            AIBlockAction::RunAgentsDiscardEditsCurrentCard => {
                 // Only act when the resolved card actually has its
                 // editor open. The keymap predicate already gates Esc
-                // on `ORCHESTRATE_EDITOR_OPEN`, but we re-check here
+                // on `RUN_AGENTS_EDITOR_OPEN`, but we re-check here
                 // because action dispatch can also come from non-keymap
                 // code paths.
-                let resolved = self.current_orchestrate_card_with_editor_open();
-                log::info!(
-                    "[orchestrate-debug] OrchestrateDiscardEditsCurrentCard fired: resolved action_id={resolved:?}"
-                );
-                if let Some(action_id) = resolved {
-                    self.handle_orchestrate_toggle_edit(&action_id, ctx);
+                if let Some(action_id) = self.current_run_agents_card_with_editor_open() {
+                    self.handle_run_agents_toggle_edit(&action_id, ctx);
                 }
             }
         }
@@ -6841,21 +6807,21 @@ impl AIBlock {
     /// pending-action queue; multi-card disambiguation \u2014 last in wins.
     /// Used by the keymap-friendly `Orchestrate*CurrentCard` action
     /// variants to resolve a target at dispatch time.
-    fn current_orchestrate_action_id(&self, app: &AppContext) -> Option<AIAgentActionId> {
+    fn current_run_agents_action_id(&self, app: &AppContext) -> Option<AIAgentActionId> {
         self.action_model
             .as_ref(app)
             .get_pending_actions_for_conversation(&self.client_ids.conversation_id)
-            .filter(|action| matches!(action.action, AIAgentActionType::Orchestrate(_)))
+            .filter(|action| matches!(action.action, AIAgentActionType::RunAgents(_)))
             .last()
             .map(|action| action.id.clone())
     }
 
     /// Returns the action ID of the most-recent pending orchestrate
     /// card whose inline editor is currently open, or `None`. Used to
-    /// scope `OrchestrateDiscardEditsCurrentCard` to cards that
+    /// scope `RunAgentsDiscardEditsCurrentCard` to cards that
     /// actually have an editor to close.
-    fn current_orchestrate_card_with_editor_open(&self) -> Option<AIAgentActionId> {
-        self.orchestrate_edit_states
+    fn current_run_agents_card_with_editor_open(&self) -> Option<AIAgentActionId> {
+        self.run_agents_edit_states
             .iter()
             .find(|(_, state)| state.is_editor_open)
             .map(|(id, _)| id.clone())
@@ -6863,10 +6829,10 @@ impl AIBlock {
 
     /// Returns true when at least one orchestrate confirmation card on
     /// this block has its inline editor open. Read by
-    /// `keymap_context` to set the `ORCHESTRATE_EDITOR_OPEN` flag that
+    /// `keymap_context` to set the `RUN_AGENTS_EDITOR_OPEN` flag that
     /// gates the `escape` keybinding.
-    pub(super) fn has_orchestrate_editor_open(&self) -> bool {
-        self.orchestrate_edit_states
+    pub(super) fn has_run_agents_editor_open(&self) -> bool {
+        self.run_agents_edit_states
             .values()
             .any(|state| state.is_editor_open)
     }
@@ -6876,17 +6842,14 @@ impl AIBlock {
     /// is observed in the streaming output so the card can render the
     /// buttons on its first frame. Idempotent: re-running with a
     /// populated entry leaves it unchanged.
-    fn ensure_orchestrate_card_buttons(
+    fn ensure_run_agents_card_buttons(
         &mut self,
         action_id: &AIAgentActionId,
         ctx: &mut ViewContext<Self>,
     ) {
-        let needs_buttons = self
-            .orchestrate_card_handles
-            .get(action_id)
-            .is_none_or(|h| {
-                h.reject_button.is_none() || h.edit_button.is_none() || h.accept_button.is_none()
-            });
+        let needs_buttons = self.run_agents_card_handles.get(action_id).is_none_or(|h| {
+            h.reject_button.is_none() || h.edit_button.is_none() || h.accept_button.is_none()
+        });
         if !needs_buttons {
             return;
         }
@@ -6894,7 +6857,7 @@ impl AIBlock {
         // Reject defaults to Ctrl-C (rendered as `⌃C` on Mac, `Ctrl C`
         // elsewhere) per the polish round (P2.2). When the inline editor
         // is open the button label/keystroke swaps to "Discard edits" /
-        // Esc via `sync_orchestrate_card_buttons` (see P2.5).
+        // Esc via `sync_run_agents_card_buttons` (see P2.5).
         let reject_keystroke =
             Keystroke::parse("ctrl-c").expect("orchestrate reject keystroke literal must parse");
         let edit_keystroke =
@@ -6914,7 +6877,7 @@ impl AIBlock {
             "Reject".to_string(),
             Some(KeystrokeSource::Fixed(reject_keystroke)),
             ButtonSize::Small,
-            AIBlockAction::OrchestrateReject {
+            AIBlockAction::RunAgentsReject {
                 action_id: action_id.clone(),
             },
             Icon::X,
@@ -6925,7 +6888,7 @@ impl AIBlock {
             "Edit".to_string(),
             Some(KeystrokeSource::Fixed(edit_keystroke)),
             ButtonSize::Small,
-            AIBlockAction::OrchestrateToggleEdit {
+            AIBlockAction::RunAgentsToggleEdit {
                 action_id: action_id.clone(),
             },
             Icon::Pencil,
@@ -6936,10 +6899,10 @@ impl AIBlock {
             "Accept".to_string(),
             Some(KeystrokeSource::Fixed(accept_keystroke)),
             ButtonSize::Small,
-            AIBlockAction::OrchestrateAccept {
+            AIBlockAction::RunAgentsAccept {
                 action_id: action_id.clone(),
             },
-            AIBlockAction::OrchestrateAcceptMenuToggled {
+            AIBlockAction::RunAgentsAcceptMenuToggled {
                 action_id: action_id.clone(),
             },
             Icon::Check,
@@ -6949,7 +6912,7 @@ impl AIBlock {
         );
 
         let entry = self
-            .orchestrate_card_handles
+            .run_agents_card_handles
             .entry(action_id.clone())
             .or_default();
         if entry.reject_button.is_none() {
@@ -6963,35 +6926,35 @@ impl AIBlock {
         }
     }
 
-    fn handle_orchestrate_toggle_edit(
+    fn handle_run_agents_toggle_edit(
         &mut self,
         action_id: &AIAgentActionId,
         ctx: &mut ViewContext<Self>,
     ) {
-        // Lazily initialize edit state from the live OrchestrateRequest on
+        // Lazily initialize edit state from the live RunAgentsRequest on
         // the pending action the first time the user clicks Edit. The
         // request is cloned so subsequent stream updates don't clobber
         // user-edited fields.
-        if !self.orchestrate_edit_states.contains_key(action_id) {
+        if !self.run_agents_edit_states.contains_key(action_id) {
             let req = self
                 .action_model
                 .as_ref(ctx)
                 .get_pending_action_by_id(action_id)
                 .and_then(|action| match &action.action {
-                    AIAgentActionType::Orchestrate(req) => Some(req.clone()),
+                    AIAgentActionType::RunAgents(req) => Some(req.clone()),
                     _ => None,
                 });
             let Some(req) = req else {
                 log::warn!(
-                    "OrchestrateToggleEdit: no pending Orchestrate action found for id={action_id:?}"
+                    "RunAgentsToggleEdit: no pending Orchestrate action found for id={action_id:?}"
                 );
                 return;
             };
-            self.orchestrate_edit_states
-                .insert(action_id.clone(), OrchestrateEditState::from_request(&req));
+            self.run_agents_edit_states
+                .insert(action_id.clone(), RunAgentsEditState::from_request(&req));
         }
 
-        if let Some(state) = self.orchestrate_edit_states.get_mut(action_id) {
+        if let Some(state) = self.run_agents_edit_states.get_mut(action_id) {
             state.is_editor_open = !state.is_editor_open;
         }
 
@@ -7002,36 +6965,36 @@ impl AIBlock {
         // picker views alive across editor toggles so their internal
         // selection/focus state is preserved.
         if self
-            .orchestrate_edit_states
+            .run_agents_edit_states
             .get(action_id)
             .is_some_and(|s| s.is_editor_open)
         {
-            self.ensure_orchestrate_pickers(action_id, ctx);
+            self.ensure_run_agents_pickers(action_id, ctx);
         }
 
         // Swap Reject ↔ Discard-edits label + shortcut chip based on
         // whether the editor is open (P2.5).
-        self.sync_orchestrate_card_buttons(action_id, ctx);
+        self.sync_run_agents_card_buttons(action_id, ctx);
     }
 
     /// Update the Edit button label/keystroke on the orchestrate
-    /// confirmation card to reflect the current `OrchestrateEditState`.
+    /// confirmation card to reflect the current `RunAgentsEditState`.
     /// Per Figma 4340:117057, when the inline editor is open the Edit
     /// button becomes "Discard edits" with an `Esc` shortcut chip; when
     /// it's closed it reverts to "Edit" with `Cmd/Ctrl-E`. The Reject
     /// button is unaffected by editor state — it stays "Reject" / `\u2303C`
     /// in both. Idempotent and safe to call repeatedly; if the buttons
     /// or edit state for the action are missing this is a no-op.
-    fn sync_orchestrate_card_buttons(
+    fn sync_run_agents_card_buttons(
         &mut self,
         action_id: &AIAgentActionId,
         ctx: &mut ViewContext<Self>,
     ) {
         let is_editor_open = self
-            .orchestrate_edit_states
+            .run_agents_edit_states
             .get(action_id)
             .is_some_and(|s| s.is_editor_open);
-        let Some(handles) = self.orchestrate_card_handles.get(action_id).cloned() else {
+        let Some(handles) = self.run_agents_card_handles.get(action_id).cloned() else {
             return;
         };
         let Some(mut edit_button) = handles.edit_button else {
@@ -7054,7 +7017,7 @@ impl AIBlock {
         edit_button.set_keybinding(Some(KeystrokeSource::Fixed(keystroke)), ctx);
         // Persist the mutated handle back into the per-action map so
         // subsequent renders see the updated label/keystroke.
-        if let Some(entry) = self.orchestrate_card_handles.get_mut(action_id) {
+        if let Some(entry) = self.run_agents_card_handles.get_mut(action_id) {
             entry.edit_button = Some(edit_button);
         }
     }
@@ -7062,7 +7025,7 @@ impl AIBlock {
     /// Lazily construct the model/harness/environment dropdown views for
     /// an orchestrate confirmation card. Idempotent: re-running this with
     /// already-populated handles is a no-op.
-    fn ensure_orchestrate_pickers(
+    fn ensure_run_agents_pickers(
         &mut self,
         action_id: &AIAgentActionId,
         ctx: &mut ViewContext<Self>,
@@ -7078,10 +7041,10 @@ impl AIBlock {
         // hex literals from the same Figma node \u2014 they don't map to
         // existing theme tokens and a future theming pass should
         // promote them.
-        const ORCHESTRATE_PICKER_HEIGHT: f32 = 36.;
+        const RUN_AGENTS_PICKER_HEIGHT: f32 = 36.;
         const ORCHESTRATE_PICKER_RADIUS: f32 = 4.;
-        const ORCHESTRATE_PICKER_BORDER_WIDTH: f32 = 1.;
-        const ORCHESTRATE_PICKER_FONT_SIZE: f32 = 14.;
+        const RUN_AGENTS_PICKER_BORDER_WIDTH: f32 = 1.;
+        const RUN_AGENTS_PICKER_FONT_SIZE: f32 = 14.;
         // Symmetric 8/8 vertical padding leaves a 20px content area
         // inside the 36px-tall picker, which exactly fits 14px text at
         // 1.4 line height. The earlier asymmetric 4/12 padding (P5.3)
@@ -7107,21 +7070,21 @@ impl AIBlock {
         let picker_background_theme: Fill = Appearance::as_ref(ctx).theme().surface_overlay_1();
         let picker_background_warpui: warpui::elements::Fill = picker_background_theme.into();
         let picker_styles = UiComponentStyles {
-            height: Some(ORCHESTRATE_PICKER_HEIGHT),
+            height: Some(RUN_AGENTS_PICKER_HEIGHT),
             background: Some(picker_background_warpui),
             border_color: Some(picker_border_color_warpui),
-            border_width: Some(ORCHESTRATE_PICKER_BORDER_WIDTH),
+            border_width: Some(RUN_AGENTS_PICKER_BORDER_WIDTH),
             border_radius: Some(picker_corner_radius),
-            font_size: Some(ORCHESTRATE_PICKER_FONT_SIZE),
+            font_size: Some(RUN_AGENTS_PICKER_FONT_SIZE),
             font_color: Some(picker_font_color),
             padding: Some(picker_padding),
             ..Default::default()
         };
-        let Some(state) = self.orchestrate_edit_states.get(action_id).cloned() else {
+        let Some(state) = self.run_agents_edit_states.get(action_id).cloned() else {
             return;
         };
 
-        let existing = self.orchestrate_card_handles.get(action_id);
+        let existing = self.run_agents_card_handles.get(action_id);
         let needs_model = existing.is_none_or(|h| h.model_picker.is_none());
         let needs_harness = existing.is_none_or(|h| h.harness_picker.is_none());
         let needs_env = existing.is_none_or(|h| h.environment_picker.is_none());
@@ -7170,13 +7133,13 @@ impl AIBlock {
                 // "Model: <value>". Default header behaviour without
                 // an override matches that.
                 dropdown.set_style(DropdownStyle::ActionButtonSecondary, ctx_dropdown);
-                dropdown.set_top_bar_height(ORCHESTRATE_PICKER_HEIGHT, ctx_dropdown);
+                dropdown.set_top_bar_height(RUN_AGENTS_PICKER_HEIGHT, ctx_dropdown);
                 dropdown.set_padding(picker_padding_clone, ctx_dropdown);
                 dropdown.set_border_radius(picker_corner_radius_clone, ctx_dropdown);
                 dropdown.set_background(picker_background_clone, ctx_dropdown);
                 dropdown.set_border_color(picker_border_color_clone, ctx_dropdown);
-                dropdown.set_border_width(ORCHESTRATE_PICKER_BORDER_WIDTH, ctx_dropdown);
-                dropdown.set_font_size(ORCHESTRATE_PICKER_FONT_SIZE, ctx_dropdown);
+                dropdown.set_border_width(RUN_AGENTS_PICKER_BORDER_WIDTH, ctx_dropdown);
+                dropdown.set_font_size(RUN_AGENTS_PICKER_FONT_SIZE, ctx_dropdown);
                 dropdown.set_font_color(picker_font_color, ctx_dropdown);
                 dropdown
             });
@@ -7190,12 +7153,10 @@ impl AIBlock {
                 let items = available_model_menu_items(
                     choices,
                     move |llm| {
-                        DropdownAction::SelectActionAndClose(
-                            AIBlockAction::OrchestrateModelChanged {
-                                action_id: action_id_for_factory.clone(),
-                                model_id: llm.id.to_string(),
-                            },
-                        )
+                        DropdownAction::SelectActionAndClose(AIBlockAction::RunAgentsModelChanged {
+                            action_id: action_id_for_factory.clone(),
+                            model_id: llm.id.to_string(),
+                        })
                     },
                     None,
                     None,
@@ -7214,7 +7175,7 @@ impl AIBlock {
             // bindings (gated on `id!(AIBlock::ui_name())`) no longer
             // resolve. See `Dropdown::close` (no built-in focus
             // restoration).
-            Self::subscribe_orchestrate_picker_close(&dropdown_handle, "model", ctx);
+            Self::subscribe_run_agents_picker_close(&dropdown_handle, "model", ctx);
             Some(dropdown_handle)
         } else {
             None
@@ -7234,13 +7195,13 @@ impl AIBlock {
                 dropdown.set_main_axis_size(MainAxisSize::Max, ctx_dropdown);
                 // P4.2: see model picker.
                 dropdown.set_style(DropdownStyle::ActionButtonSecondary, ctx_dropdown);
-                dropdown.set_top_bar_height(ORCHESTRATE_PICKER_HEIGHT, ctx_dropdown);
+                dropdown.set_top_bar_height(RUN_AGENTS_PICKER_HEIGHT, ctx_dropdown);
                 dropdown.set_padding(picker_padding_clone, ctx_dropdown);
                 dropdown.set_border_radius(picker_corner_radius_clone, ctx_dropdown);
                 dropdown.set_background(picker_background_clone, ctx_dropdown);
                 dropdown.set_border_color(picker_border_color_clone, ctx_dropdown);
-                dropdown.set_border_width(ORCHESTRATE_PICKER_BORDER_WIDTH, ctx_dropdown);
-                dropdown.set_font_size(ORCHESTRATE_PICKER_FONT_SIZE, ctx_dropdown);
+                dropdown.set_border_width(RUN_AGENTS_PICKER_BORDER_WIDTH, ctx_dropdown);
+                dropdown.set_font_size(RUN_AGENTS_PICKER_FONT_SIZE, ctx_dropdown);
                 dropdown.set_font_color(picker_font_color, ctx_dropdown);
                 dropdown
             });
@@ -7259,7 +7220,7 @@ impl AIBlock {
                     let action_id_for_item = action_id_for_picker.clone();
                     let harness_str = harness.to_string();
                     fields = fields.with_on_select_action(DropdownAction::SelectActionAndClose(
-                        AIBlockAction::OrchestrateHarnessChanged {
+                        AIBlockAction::RunAgentsHarnessChanged {
                             action_id: action_id_for_item,
                             harness_type: harness_str.clone(),
                         },
@@ -7274,7 +7235,7 @@ impl AIBlock {
                     dropdown.set_selected_by_index(idx, ctx_dropdown);
                 }
             });
-            Self::subscribe_orchestrate_picker_close(&dropdown_handle, "harness", ctx);
+            Self::subscribe_run_agents_picker_close(&dropdown_handle, "harness", ctx);
             Some(dropdown_handle)
         } else {
             None
@@ -7283,8 +7244,8 @@ impl AIBlock {
         let environment_picker = if needs_env {
             let action_id_for_picker = action_id.clone();
             let initial_env = match &state.execution_mode {
-                OrchestrateExecutionMode::Remote { environment_id, .. } => environment_id.clone(),
-                OrchestrateExecutionMode::Local => String::new(),
+                RunAgentsExecutionMode::Remote { environment_id, .. } => environment_id.clone(),
+                RunAgentsExecutionMode::Local => String::new(),
             };
             let picker_styles_clone = picker_styles;
             // See model picker note above.
@@ -7302,7 +7263,7 @@ impl AIBlock {
                 // all four pickers in the row are the same size. The
                 // default `FilterableDropdown` height is 30; the other
                 // pickers use 36 per Figma 4340:117057.
-                dropdown.set_top_bar_height(ORCHESTRATE_PICKER_HEIGHT, ctx_dropdown);
+                dropdown.set_top_bar_height(RUN_AGENTS_PICKER_HEIGHT, ctx_dropdown);
                 dropdown
             });
             dropdown_handle.update(ctx, |dropdown, ctx_dropdown| {
@@ -7311,16 +7272,6 @@ impl AIBlock {
                     .get_all_environment_ids_and_names(ctx_dropdown);
                 let mut sorted_envs: Vec<(String, String)> = envs.into_iter().collect();
                 sorted_envs.sort_by(|a, b| a.1.cmp(&b.1));
-                // [orchestrate-debug] Diagnostic for QUALITY-569 polish
-                // round 3: surface how many environments the picker
-                // received at construction time. If this is 0, the env
-                // list isn't loaded yet \u2014 the user can verify by opening
-                // the orchestration sidebar / agent management page once
-                // (which force-loads envs) before re-testing.
-                log::info!(
-                    "[orchestrate-debug] env picker populated with {} envs",
-                    sorted_envs.len()
-                );
 
                 let mut items: Vec<MenuItem<DropdownAction<AIBlockAction>>> = Vec::new();
                 let mut selected_name: Option<String> = None;
@@ -7340,9 +7291,9 @@ impl AIBlock {
                 // is available.
                 let action_id_for_none = action_id_for_picker.clone();
                 items.push(MenuItem::Item(
-                    MenuItemFields::new(ORCHESTRATE_ENV_NONE_LABEL).with_on_select_action(
+                    MenuItemFields::new(RUN_AGENTS_ENV_NONE_LABEL).with_on_select_action(
                         DropdownAction::SelectActionAndClose(
-                            AIBlockAction::OrchestrateEnvironmentChanged {
+                            AIBlockAction::RunAgentsEnvironmentChanged {
                                 action_id: action_id_for_none,
                                 environment_id: String::new(),
                             },
@@ -7350,7 +7301,7 @@ impl AIBlock {
                     ),
                 ));
                 if initial_env.is_empty() {
-                    selected_name = Some(ORCHESTRATE_ENV_NONE_LABEL.to_string());
+                    selected_name = Some(RUN_AGENTS_ENV_NONE_LABEL.to_string());
                 }
                 for (env_id, env_name) in &sorted_envs {
                     if env_id == &initial_env {
@@ -7361,7 +7312,7 @@ impl AIBlock {
                     items.push(MenuItem::Item(
                         MenuItemFields::new(env_name).with_on_select_action(
                             DropdownAction::SelectActionAndClose(
-                                AIBlockAction::OrchestrateEnvironmentChanged {
+                                AIBlockAction::RunAgentsEnvironmentChanged {
                                     action_id: action_id_for_item,
                                     environment_id: env_id_for_item,
                                 },
@@ -7378,7 +7329,6 @@ impl AIBlock {
             // separately from the Dropdown helper.
             ctx.subscribe_to_view(&dropdown_handle, |me, _, event, ctx| {
                 if let FilterableDropdownEvent::Close = event {
-                    log::info!("[orchestrate-debug] env picker closed, refocusing AIBlock");
                     ctx.focus_self();
                     me.try_steal_focus(ctx);
                 }
@@ -7391,7 +7341,7 @@ impl AIBlock {
         // Visual-only Host picker. Currently the worker host is fixed at
         // "warp"; the picker is constructed as a real `Dropdown` so the
         // four-column editor layout matches Figma 4340:117057. Selecting
-        // the lone item is a no-op (`OrchestrateAcceptMenuToggled` is the
+        // the lone item is a no-op (`RunAgentsAcceptMenuToggled` is the
         // only available no-op action wired through `AIBlock`).
         let needs_host = existing.is_none_or(|h| h.host_picker.is_none());
         let host_picker = if needs_host {
@@ -7407,20 +7357,20 @@ impl AIBlock {
                 dropdown.set_main_axis_size(MainAxisSize::Max, ctx_dropdown);
                 // P4.2: see model picker.
                 dropdown.set_style(DropdownStyle::ActionButtonSecondary, ctx_dropdown);
-                dropdown.set_top_bar_height(ORCHESTRATE_PICKER_HEIGHT, ctx_dropdown);
+                dropdown.set_top_bar_height(RUN_AGENTS_PICKER_HEIGHT, ctx_dropdown);
                 dropdown.set_padding(picker_padding_clone, ctx_dropdown);
                 dropdown.set_border_radius(picker_corner_radius_clone, ctx_dropdown);
                 dropdown.set_background(picker_background_clone, ctx_dropdown);
                 dropdown.set_border_color(picker_border_color_clone, ctx_dropdown);
-                dropdown.set_border_width(ORCHESTRATE_PICKER_BORDER_WIDTH, ctx_dropdown);
-                dropdown.set_font_size(ORCHESTRATE_PICKER_FONT_SIZE, ctx_dropdown);
+                dropdown.set_border_width(RUN_AGENTS_PICKER_BORDER_WIDTH, ctx_dropdown);
+                dropdown.set_font_size(RUN_AGENTS_PICKER_FONT_SIZE, ctx_dropdown);
                 dropdown.set_font_color(picker_font_color, ctx_dropdown);
                 dropdown
             });
             dropdown_handle.update(ctx, |dropdown, ctx_dropdown| {
                 let item = MenuItemFields::new("Warp".to_string()).with_on_select_action(
                     DropdownAction::SelectActionAndClose(
-                        AIBlockAction::OrchestrateAcceptMenuToggled {
+                        AIBlockAction::RunAgentsAcceptMenuToggled {
                             action_id: action_id_for_picker.clone(),
                         },
                     ),
@@ -7428,14 +7378,14 @@ impl AIBlock {
                 dropdown.set_rich_items(vec![MenuItem::Item(item)], ctx_dropdown);
                 dropdown.set_selected_by_index(0, ctx_dropdown);
             });
-            Self::subscribe_orchestrate_picker_close(&dropdown_handle, "host", ctx);
+            Self::subscribe_run_agents_picker_close(&dropdown_handle, "host", ctx);
             Some(dropdown_handle)
         } else {
             None
         };
 
         let entry = self
-            .orchestrate_card_handles
+            .run_agents_card_handles
             .entry(action_id.clone())
             .or_default();
         if entry.model_picker.is_none() {
@@ -7456,8 +7406,8 @@ impl AIBlock {
         // top-bar text stays blank even after the menu's selected_row_index
         // is set), so we explicitly drive the displayed selection here
         // and again after every state-mutating action via
-        // `sync_orchestrate_picker_selections`.
-        self.sync_orchestrate_picker_selections(action_id, ctx);
+        // `sync_run_agents_picker_selections`.
+        self.sync_run_agents_picker_selections(action_id, ctx);
     }
 
     /// Round 7 hotfix: subscribe to a `Dropdown` picker's events and,
@@ -7466,14 +7416,13 @@ impl AIBlock {
     /// becomes active again. Without this, focus is left on the
     /// now-hidden Dropdown view and the orchestrate Enter / Accept
     /// keybindings stop firing.
-    fn subscribe_orchestrate_picker_close(
+    fn subscribe_run_agents_picker_close(
         dropdown_handle: &ViewHandle<Dropdown<AIBlockAction>>,
-        picker_label: &'static str,
+        _picker_label: &'static str,
         ctx: &mut ViewContext<Self>,
     ) {
         ctx.subscribe_to_view(dropdown_handle, move |me, _, event, ctx| {
             if let DropdownEvent::Close = event {
-                log::info!("[orchestrate-debug] {picker_label} picker closed, refocusing AIBlock");
                 ctx.focus_self();
                 me.try_steal_focus(ctx);
             }
@@ -7481,20 +7430,20 @@ impl AIBlock {
     }
 
     /// Re-sync each picker's displayed selection with the authoritative
-    /// `OrchestrateEditState`. Called after creating the pickers and
+    /// `RunAgentsEditState`. Called after creating the pickers and
     /// after every state-mutating action (Local/Cloud toggle,
-    /// OrchestrateModelChanged, OrchestrateHarnessChanged,
-    /// OrchestrateEnvironmentChanged) so the top-bar label always
+    /// RunAgentsModelChanged, RunAgentsHarnessChanged,
+    /// RunAgentsEnvironmentChanged) so the top-bar label always
     /// matches the underlying state.
-    fn sync_orchestrate_picker_selections(
+    fn sync_run_agents_picker_selections(
         &mut self,
         action_id: &AIAgentActionId,
         ctx: &mut ViewContext<Self>,
     ) {
-        let Some(state) = self.orchestrate_edit_states.get(action_id).cloned() else {
+        let Some(state) = self.run_agents_edit_states.get(action_id).cloned() else {
             return;
         };
-        let Some(handles) = self.orchestrate_card_handles.get(action_id).cloned() else {
+        let Some(handles) = self.run_agents_card_handles.get(action_id).cloned() else {
             return;
         };
         if let Some(model_picker) = handles.model_picker {
@@ -7520,15 +7469,15 @@ impl AIBlock {
         }
         if let Some(environment_picker) = handles.environment_picker {
             let env_id = match &state.execution_mode {
-                OrchestrateExecutionMode::Remote { environment_id, .. } => environment_id.clone(),
-                OrchestrateExecutionMode::Local => String::new(),
+                RunAgentsExecutionMode::Remote { environment_id, .. } => environment_id.clone(),
+                RunAgentsExecutionMode::Local => String::new(),
             };
             environment_picker.update(ctx, |dropdown, ctx_dropdown| {
                 if env_id.is_empty() {
                     // Round 6 follow-up B1: empty env_id selects the
                     // synthetic "(no environment)" item at the top of
                     // the menu, mirroring the deselect path.
-                    dropdown.set_selected_by_name(ORCHESTRATE_ENV_NONE_LABEL, ctx_dropdown);
+                    dropdown.set_selected_by_name(RUN_AGENTS_ENV_NONE_LABEL, ctx_dropdown);
                     return;
                 }
                 let envs = AgentConversationsModel::as_ref(ctx_dropdown)
@@ -7546,31 +7495,27 @@ impl AIBlock {
         }
     }
 
-    fn handle_orchestrate_accept(
+    fn handle_run_agents_accept(
         &mut self,
         action_id: &AIAgentActionId,
         ctx: &mut ViewContext<Self>,
     ) {
-        // Idempotency guard: presence of an entry in `orchestrate_spawning`
+        // Idempotency guard: presence of an entry in `run_agents_spawning`
         // means a previous invocation of this handler has already begun
         // dispatching children for this action. Repeat invocations
         // (Enter keyboard auto-repeat, double-click on Accept, repeat
         // `ExecuteNextPendingAction` delegation) MUST short-circuit here
         // so we don't dispatch the batch a second time and create extra
         // panes. The entry is removed by the async outcome callback
-        // immediately before `apply_orchestrate_action_result` runs.
-        let already_accepted = self.orchestrate_spawning.contains_key(action_id);
-        log::info!(
-            "[orchestrate-debug] handle_orchestrate_accept entry action_id={action_id:?} already_accepted={already_accepted}"
-        );
-        if already_accepted {
+        // immediately before `apply_run_agents_action_result` runs.
+        if self.run_agents_spawning.contains_key(action_id) {
             return;
         }
 
         // Validation gate: per spec §8, Cloud-without-env and OpenCode+Cloud
         // disable Accept and surface inline error text. Clicks bypass the
         // gate (e.g. via keyboard shortcut) bail out here too.
-        if let Some(state) = self.orchestrate_edit_states.get(action_id) {
+        if let Some(state) = self.run_agents_edit_states.get(action_id) {
             if state.accept_disabled_reason().is_some() {
                 return;
             }
@@ -7584,28 +7529,26 @@ impl AIBlock {
             .as_ref(ctx)
             .get_pending_action_by_id(action_id)
             .and_then(|action| match &action.action {
-                AIAgentActionType::Orchestrate(req) => Some((req.clone(), action.task_id.clone())),
+                AIAgentActionType::RunAgents(req) => Some((req.clone(), action.task_id.clone())),
                 _ => None,
             });
         let Some((live_request, task_id)) = pending_request else {
-            log::warn!(
-                "OrchestrateAccept: no pending Orchestrate action found for id={action_id:?}"
-            );
+            log::warn!("RunAgentsAccept: no pending Orchestrate action found for id={action_id:?}");
             return;
         };
 
         let request = self
-            .orchestrate_edit_states
+            .run_agents_edit_states
             .get(action_id)
             .map(|state| state.to_request())
             .unwrap_or(live_request);
 
         if request.agent_run_configs.is_empty() {
-            log::warn!("OrchestrateAccept: empty agent_run_configs; surfacing failure result");
-            self.apply_orchestrate_action_result(
+            log::warn!("RunAgentsAccept: empty agent_run_configs; surfacing failure result");
+            self.apply_run_agents_action_result(
                 action_id,
                 task_id,
-                ai::agent::action_result::OrchestrateResult::Failure {
+                ai::agent::action_result::RunAgentsResult::Failure {
                     error: "orchestrate: empty agent_run_configs".to_string(),
                 },
                 ctx,
@@ -7615,7 +7558,7 @@ impl AIBlock {
 
         // Snapshot the run-wide config and per-agent configs we'll need
         // both inside the dispatch loop and again when assembling the
-        // final `OrchestrateResult::Launched` (where we report outcomes
+        // final `RunAgentsResult::Launched` (where we report outcomes
         // in input order).
         let parent_conversation_id = self.client_ids.conversation_id;
         let parent_run_id = BlocklistAIHistoryModel::as_ref(ctx)
@@ -7630,14 +7573,14 @@ impl AIBlock {
         let executor_handle = self.action_model.as_ref(ctx).start_agent_executor(ctx);
 
         // Record the in-flight dispatch so subsequent calls hit the
-        // idempotency guard above and so `render_orchestrate` switches
+        // idempotency guard above and so `render_run_agents` switches
         // from the confirmation card to the "Spawning N agents…" card.
         // The async outcome callback below removes this entry just
-        // before applying the terminal `OrchestrateResult`, at which
+        // before applying the terminal `RunAgentsResult`, at which
         // point the post-action card takes over.
-        self.orchestrate_spawning.insert(
+        self.run_agents_spawning.insert(
             action_id.clone(),
-            OrchestrateSpawningSnapshot {
+            RunAgentsSpawningSnapshot {
                 agent_count: agent_run_configs.len(),
             },
         );
@@ -7655,8 +7598,8 @@ impl AIBlock {
 
         let mut slots: Vec<ChildSlot> = Vec::with_capacity(agent_run_configs.len());
         for cfg in &agent_run_configs {
-            let prompt = compose_orchestrate_child_prompt(&base_prompt, &cfg.prompt);
-            let mode = orchestrate_to_start_agent_mode(
+            let prompt = compose_run_agents_child_prompt(&base_prompt, &cfg.prompt);
+            let mode = run_agents_to_start_agent_mode(
                 &run_execution_mode,
                 &run_harness_type,
                 &run_model_id,
@@ -7669,10 +7612,10 @@ impl AIBlock {
                     continue;
                 }
             };
-            // OrchestrateExecutionMode::Remote requires `parent_run_id`;
+            // RunAgentsExecutionMode::Remote requires `parent_run_id`;
             // surface a child-level failure rather than aborting the
             // whole batch when it's missing.
-            if matches!(run_execution_mode, OrchestrateExecutionMode::Remote { .. })
+            if matches!(run_execution_mode, RunAgentsExecutionMode::Remote { .. })
                 && parent_run_id.is_none()
             {
                 slots.push(ChildSlot::Failed(
@@ -7698,19 +7641,18 @@ impl AIBlock {
         let agent_run_configs_for_result = agent_run_configs.clone();
         ctx.spawn(
             async move {
-                let mut outcomes: Vec<OrchestrateAgentOutcomeKind> =
-                    Vec::with_capacity(slots.len());
+                let mut outcomes: Vec<RunAgentsAgentOutcomeKind> = Vec::with_capacity(slots.len());
                 for slot in slots {
                     let kind = match slot {
-                        ChildSlot::Failed(error) => OrchestrateAgentOutcomeKind::Failed { error },
+                        ChildSlot::Failed(error) => RunAgentsAgentOutcomeKind::Failed { error },
                         ChildSlot::Pending(receiver) => match receiver.recv().await {
                             Ok(StartAgentOutcome::Started { agent_id }) => {
-                                OrchestrateAgentOutcomeKind::Launched { agent_id }
+                                RunAgentsAgentOutcomeKind::Launched { agent_id }
                             }
                             Ok(StartAgentOutcome::Error(error)) => {
-                                OrchestrateAgentOutcomeKind::Failed { error }
+                                RunAgentsAgentOutcomeKind::Failed { error }
                             }
-                            Err(_) => OrchestrateAgentOutcomeKind::Failed {
+                            Err(_) => RunAgentsAgentOutcomeKind::Failed {
                                 error: "Cancelled before launch".to_string(),
                             },
                         },
@@ -7723,55 +7665,54 @@ impl AIBlock {
                 let agents = agent_run_configs_for_result
                     .iter()
                     .zip(outcomes)
-                    .map(|(cfg, kind)| OrchestrateAgentOutcome {
+                    .map(|(cfg, kind)| RunAgentsAgentOutcome {
                         name: cfg.name.clone(),
-                        title: cfg.title.clone(),
                         kind,
                     })
                     .collect();
                 let launched_mode = match &run_execution_mode {
-                    OrchestrateExecutionMode::Local => OrchestrateLaunchedExecutionMode::Local,
-                    OrchestrateExecutionMode::Remote {
+                    RunAgentsExecutionMode::Local => RunAgentsLaunchedExecutionMode::Local,
+                    RunAgentsExecutionMode::Remote {
                         environment_id,
                         worker_host,
                         computer_use_enabled,
-                    } => OrchestrateLaunchedExecutionMode::Remote {
+                    } => RunAgentsLaunchedExecutionMode::Remote {
                         environment_id: environment_id.clone(),
                         worker_host: worker_host.clone(),
                         computer_use_enabled: *computer_use_enabled,
                     },
                 };
-                let result = ai::agent::action_result::OrchestrateResult::Launched {
+                let result = ai::agent::action_result::RunAgentsResult::Launched {
                     model_id: run_model_id,
                     harness_type: run_harness_type,
                     execution_mode: launched_mode,
                     agents,
                 };
                 // Drop the in-flight snapshot before applying the
-                // terminal result so `render_orchestrate` reads the
+                // terminal result so `render_run_agents` reads the
                 // post-action `Launched` state on the next render
                 // rather than the "Spawning…" in-flight card.
-                me.orchestrate_spawning.remove(&action_id_for_result);
-                me.apply_orchestrate_action_result(&action_id_for_result, task_id, result, ctx);
+                me.run_agents_spawning.remove(&action_id_for_result);
+                me.apply_run_agents_action_result(&action_id_for_result, task_id, result, ctx);
             },
         );
     }
 
-    /// Helper to apply a terminal `OrchestrateResult` to the action model
+    /// Helper to apply a terminal `RunAgentsResult` to the action model
     /// so the action is removed from the pending queue and the result is
     /// mirrored back to the agent on the next request.
-    fn apply_orchestrate_action_result(
+    fn apply_run_agents_action_result(
         &mut self,
         action_id: &AIAgentActionId,
         task_id: crate::ai::agent::task::TaskId,
-        result: ai::agent::action_result::OrchestrateResult,
+        result: ai::agent::action_result::RunAgentsResult,
         ctx: &mut ViewContext<Self>,
     ) {
         let conversation_id = self.client_ids.conversation_id;
         let action_result = AIAgentActionResult {
             id: action_id.clone(),
             task_id,
-            result: AIAgentActionResultType::Orchestrate(result),
+            result: AIAgentActionResultType::RunAgents(result),
         };
         self.action_model.update(ctx, |action_model, ctx| {
             action_model.apply_finished_action_result(conversation_id, action_result, ctx);
@@ -7784,7 +7725,7 @@ impl AIBlock {
 /// non-empty, just `base_prompt` when the per-agent `prompt` is empty,
 /// and just the per-agent `prompt` when `base_prompt` is empty
 /// (defensive).
-fn compose_orchestrate_child_prompt(base_prompt: &str, per_agent_prompt: &str) -> String {
+fn compose_run_agents_child_prompt(base_prompt: &str, per_agent_prompt: &str) -> String {
     let base_trimmed = base_prompt.trim();
     let per_agent_trimmed = per_agent_prompt.trim();
     match (base_trimmed.is_empty(), per_agent_trimmed.is_empty()) {
@@ -7802,15 +7743,15 @@ fn compose_orchestrate_child_prompt(base_prompt: &str, per_agent_prompt: &str) -
 /// Returns `Err(reason)` if the combination is rejected pre-flight (e.g.
 /// OpenCode+Remote or an unrecognised local harness); the caller surfaces
 /// the reason as a per-child `Failed` outcome.
-fn orchestrate_to_start_agent_mode(
-    run_execution_mode: &OrchestrateExecutionMode,
+fn run_agents_to_start_agent_mode(
+    run_execution_mode: &RunAgentsExecutionMode,
     run_harness_type: &str,
     run_model_id: &str,
-    cfg: &OrchestrateAgentRunConfig,
+    cfg: &RunAgentsAgentRunConfig,
 ) -> Result<crate::ai::agent::StartAgentExecutionMode, String> {
     use crate::ai::agent::StartAgentExecutionMode as M;
     match run_execution_mode {
-        OrchestrateExecutionMode::Local => {
+        RunAgentsExecutionMode::Local => {
             // Empty/oz harness uses the legacy local Oz path
             // (`harness_type: None`). Other harnesses route through the
             // Local-with-harness arm.
@@ -7832,7 +7773,7 @@ fn orchestrate_to_start_agent_mode(
                 })
             }
         }
-        OrchestrateExecutionMode::Remote {
+        RunAgentsExecutionMode::Remote {
             environment_id,
             worker_host,
             computer_use_enabled,

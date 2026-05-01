@@ -13,12 +13,11 @@ use crate::{
         action_result::{
             AIAgentActionResultType, AskUserQuestionResult, CallMCPToolResult,
             CreateDocumentsResult, EditDocumentsResult, FetchConversationResult, FileGlobResult,
-            FileGlobV2Result, GrepResult, InsertReviewCommentsResult, OrchestrateResult,
-            ReadDocumentsResult, ReadFilesResult, ReadMCPResourceResult,
-            ReadShellCommandOutputResult, ReadSkillResult, RequestCommandOutputResult,
-            RequestComputerUseResult, RequestFileEditsResult, SearchCodebaseResult,
-            SendMessageToAgentResult, StartAgentResult, StartAgentVersion,
-            SuggestNewConversationResult, SuggestPromptResult,
+            FileGlobV2Result, GrepResult, InsertReviewCommentsResult, ReadDocumentsResult,
+            ReadFilesResult, ReadMCPResourceResult, ReadShellCommandOutputResult, ReadSkillResult,
+            RequestCommandOutputResult, RequestComputerUseResult, RequestFileEditsResult,
+            RunAgentsResult, SearchCodebaseResult, SendMessageToAgentResult, StartAgentResult,
+            StartAgentVersion, SuggestNewConversationResult, SuggestPromptResult,
             TransferShellCommandControlToUserResult, UploadArtifactResult, UseComputerResult,
             WriteToLongRunningShellCommandResult,
         },
@@ -174,34 +173,29 @@ pub enum AIAgentActionType {
     /// The full per-child prompt is computed at dispatch time as
     /// `base_prompt + "\n\n" + agent_run_configs[i].prompt` (or just
     /// `base_prompt` when the per-agent `prompt` is empty).
-    Orchestrate(OrchestrateRequest),
+    RunAgents(RunAgentsRequest),
 }
 
-/// Run-wide + per-agent configuration for an `Orchestrate` tool call.
+/// Run-wide + per-agent configuration for a `RunAgents` tool call.
 ///
-/// Mirrors the proto `Orchestrate` message. Server-resolved fields
-/// (`model_id`, `harness_type`, `execution_mode`'s remote details,
-/// `auto_launch`) are folded in by the server's final
-/// `SetOrchestrateToolCall` re-emission once the tool call payload is
-/// complete; the client renders the full layout from a fully-resolved
-/// instance only.
+/// Mirrors the proto `RunAgents` message. Server-resolved fields
+/// (`model_id`, `harness_type`, `execution_mode`'s remote details) are
+/// folded in by the server's final tool-call re-emission once the
+/// payload is complete; the client renders the full layout from a
+/// fully-resolved instance only.
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct OrchestrateRequest {
+pub struct RunAgentsRequest {
     pub summary: String,
     pub base_prompt: String,
     pub skills: Vec<SkillReference>,
     pub model_id: String,
     pub harness_type: String,
-    pub execution_mode: OrchestrateExecutionMode,
-    pub agent_run_configs: Vec<OrchestrateAgentRunConfig>,
-    /// Stage 2: when `true`, the client skips the confirmation card and
-    /// dispatches per-agent `CreateAgentTask` immediately. Stage 1 always
-    /// receives `false`.
-    pub auto_launch: bool,
+    pub execution_mode: RunAgentsExecutionMode,
+    pub agent_run_configs: Vec<RunAgentsAgentRunConfig>,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum OrchestrateExecutionMode {
+pub enum RunAgentsExecutionMode {
     Local,
     Remote {
         environment_id: String,
@@ -210,14 +204,14 @@ pub enum OrchestrateExecutionMode {
     },
 }
 
-impl OrchestrateExecutionMode {
+impl RunAgentsExecutionMode {
     pub fn is_remote(&self) -> bool {
         matches!(self, Self::Remote { .. })
     }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub struct OrchestrateAgentRunConfig {
+pub struct RunAgentsAgentRunConfig {
     pub name: String,
     pub prompt: String,
     pub title: String,
@@ -380,9 +374,7 @@ impl AIAgentActionType {
             Self::AskUserQuestion { .. } => {
                 AIAgentActionResultType::AskUserQuestion(AskUserQuestionResult::Cancelled)
             }
-            Self::Orchestrate(_) => {
-                AIAgentActionResultType::Orchestrate(OrchestrateResult::Cancelled)
-            }
+            Self::RunAgents(_) => AIAgentActionResultType::RunAgents(RunAgentsResult::Cancelled),
         }
     }
 
@@ -428,7 +420,7 @@ impl AIAgentActionType {
             Self::AskUserQuestion { questions } => {
                 format!("Ask user {} question(s)", questions.len())
             }
-            Self::Orchestrate(req) => {
+            Self::RunAgents(req) => {
                 format!("Orchestrate {} agent(s)", req.agent_run_configs.len())
             }
         }
@@ -603,7 +595,7 @@ impl Display for AIAgentActionType {
             AIAgentActionType::AskUserQuestion { questions } => {
                 write!(f, "AskUserQuestion: {} question(s)", questions.len())
             }
-            AIAgentActionType::Orchestrate(req) => {
+            AIAgentActionType::RunAgents(req) => {
                 let names = req
                     .agent_run_configs
                     .iter()
