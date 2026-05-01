@@ -17,20 +17,23 @@
 //!   `keymap_context` inserts a per-view flag (`RUN_AGENTS_EDITOR_OPEN`)
 //!   when this card's editor is open so the `escape` binding only fires
 //!   on cards that actually have an editor to discard.
-//! * **Dispatch on Accept/Reject still lives on `AIBlock`.** The view
-//!   emits `AcceptRequested` / `RejectRequested` events; `AIBlock` reads
-//!   the resolved `RunAgentsRequest` from the view via
-//!   [`RunAgentsCardView::current_request`] and runs the existing
-//!   `dispatch_run_agents` flow. Step 2 of the architectural refactor
-//!   will move that flow into a `RunAgentsExecutor` paralleling
-//!   `StartAgentExecutor`.
-//! * **Spawning snapshot** is held inside the view (an
-//!   `Option<RunAgentsSpawningSnapshot>`); `AIBlock` flips it via
-//!   [`RunAgentsCardView::set_spawning_snapshot`] /
-//!   [`RunAgentsCardView::clear_spawning_snapshot`]. The presence of a
-//!   snapshot doubles as the idempotency guard for repeat Accept
-//!   dispatches and as the source for the in-flight "Spawning N
-//!   agents…" card.
+//! * **Accept dispatch lives on the view.** On Accept, the view reads
+//!   its own resolved [`RunAgentsRequest`] (with any user edits),
+//!   gates on validation, and calls
+//!   [`BlocklistAIActionModel::execute_run_agents`] — which in turn
+//!   drives [`RunAgentsExecutor::dispatch_run_agents`]. The view does
+//!   not need to surface an `AcceptRequested` event back to its
+//!   parent; only `RejectRequested` remains, since rejection still
+//!   uses `AIBlock::cancel_action` for parity with the other inline
+//!   action views.
+//! * **Spawning snapshot is event-driven.** The view subscribes to
+//!   [`RunAgentsExecutorEvent::SpawningStarted`] /
+//!   [`RunAgentsExecutorEvent::SpawningFinished`] and updates its
+//!   internal `spawning: Option<RunAgentsSpawningSnapshot>` from the
+//!   executor's authoritative lifecycle. The presence of the snapshot
+//!   sources the in-flight "Spawning N agents…" card, while the
+//!   executor's own `pending` table is the canonical idempotency
+//!   guard.
 //!
 //! Spec references: TECH.md §8, §9; PRODUCT.md "Confirmation card",
 //! "Post-action card states", "Invariants".
@@ -56,19 +59,21 @@ use warpui::{
 use warp_cli::agent::Harness;
 use warp_core::ui::theme::Fill;
 
-use crate::LLMPreferences;
 use crate::ai::agent::icons;
 use crate::ai::agent::{AIAgentActionId, AIAgentActionResultType};
 use crate::ai::agent_conversations_model::AgentConversationsModel;
-use crate::ai::blocklist::action_model::{AIActionStatus, BlocklistAIActionModel};
+use crate::ai::blocklist::action_model::{
+    AIActionStatus, BlocklistAIActionModel, RunAgentsExecutor, RunAgentsExecutorEvent,
+    RunAgentsSpawningSnapshot,
+};
 use crate::ai::blocklist::agent_view::orchestration_pill_bar::render_static_agent_pill;
-use crate::ai::blocklist::block::AIBlock;
 use crate::ai::blocklist::block::model::AIBlockModel;
 use crate::ai::blocklist::block::view_impl::WithContentItemSpacing;
+use crate::ai::blocklist::block::AIBlock;
 use crate::ai::blocklist::inline_action::inline_action_header::{HeaderConfig, InteractionMode};
 use crate::ai::blocklist::inline_action::inline_action_icons;
 use crate::ai::blocklist::inline_action::requested_action::{
-    CTRL_C_KEYSTROKE, ENTER_KEYSTROKE, render_requested_action_row_for_text,
+    render_requested_action_row_for_text, CTRL_C_KEYSTROKE, ENTER_KEYSTROKE,
 };
 use crate::ai::execution_profiles::model_menu_items::available_model_menu_items;
 use crate::ai::harness_display;
@@ -78,11 +83,12 @@ use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
 use crate::view_components::action_button::{ButtonSize, KeystrokeSource, NakedTheme};
 use crate::view_components::compactible_action_button::{
-    CompactibleActionButton, MEDIUM_SIZE_SWITCH_THRESHOLD, RenderCompactibleActionButton,
+    CompactibleActionButton, RenderCompactibleActionButton, MEDIUM_SIZE_SWITCH_THRESHOLD,
 };
 use crate::view_components::compactible_split_action_button::CompactibleSplitActionButton;
 use crate::view_components::dropdown::{Dropdown, DropdownAction, DropdownEvent, DropdownStyle};
 use crate::view_components::{FilterableDropdown, FilterableDropdownEvent};
+use crate::LLMPreferences;
 
 /// Round 6 follow-up B3: canonical worker-host value (lowercase) used
 /// throughout the orchestrate edit state. The recommendation copy in
@@ -284,26 +290,6 @@ struct RunAgentsCardHandles {
     host_picker: Option<ViewHandle<Dropdown<RunAgentsCardViewAction>>>,
 }
 
-/// Snapshot captured at orchestrate-Accept time used for two purposes:
-///
-/// 1. **Idempotency guard.** The presence of a snapshot indicates a
-///    previous Accept invocation has already begun dispatching this
-///    card's children. Repeat invocations (Enter auto-repeat,
-///    double-click on Accept) hit the guard and short-circuit.
-/// 2. **Source for the in-flight "Spawning N agents…" card.** While
-///    the async dispatch batch is still running, the view renders an
-///    in-flight status card in place of the confirmation card. The
-///    parent's outcome callback clears the snapshot before the
-///    `BlocklistAIActionExecutor::FinishedAction` event fires, at
-///    which point the post-action terminal card takes over.
-#[derive(Debug, Clone)]
-pub struct RunAgentsSpawningSnapshot {
-    /// Number of agents being spawned. Drives pluralization of the
-    /// in-flight card label ("Spawning 1 agent…" vs "Spawning N
-    /// agents…").
-    pub agent_count: usize,
-}
-
 // ---------------------------------------------------------------------------
 // Action / Event enums
 // ---------------------------------------------------------------------------
@@ -316,9 +302,9 @@ pub struct RunAgentsSpawningSnapshot {
 /// resolve a target.
 #[derive(Clone, Debug)]
 pub enum RunAgentsCardViewAction {
-    /// User accepted the card. Emits `RunAgentsCardViewEvent::AcceptRequested`
-    /// for the parent `AIBlock` to translate into the
-    /// `dispatch_run_agents` flow.
+    /// User accepted the card. Drives
+    /// [`BlocklistAIActionModel::execute_run_agents`] inline using
+    /// the view's resolved (post-edit) request.
     Accept,
     /// User rejected the card. Emits `RunAgentsCardViewEvent::RejectRequested`
     /// so the parent `AIBlock` can call `cancel_action`.
@@ -341,14 +327,9 @@ pub enum RunAgentsCardViewAction {
 }
 
 /// Events surfaced to `AIBlock` so it can run the cross-cutting flows
-/// that don't belong on the per-card view (action-model dispatch,
-/// cancellation, focus-stealing).
+/// that still live on the parent (cancellation).
 #[derive(Clone, Debug)]
 pub enum RunAgentsCardViewEvent {
-    /// The user accepted this card. Parent should resolve the current
-    /// `RunAgentsRequest` via [`RunAgentsCardView::current_request`]
-    /// and run the dispatch flow.
-    AcceptRequested,
     /// The user rejected this card. Parent should cancel the action.
     RejectRequested,
 }
@@ -370,15 +351,32 @@ pub struct RunAgentsCardView {
     block_model: Rc<dyn AIBlockModel<View = AIBlock>>,
 }
 
+/// Shorthand for `eq_ignore_ascii_case("opencode")` used by the
+/// view's local pre-flight Accept gate. The executor enforces the
+/// same rule defensively in [`RunAgentsExecutor::dispatch_run_agents`];
+/// this version exists so the view can short-circuit before bothering
+/// the action model when an Enter keypress bypasses the editor's
+/// disabled-button gate (`accept_disabled_reason`).
+fn is_opencode_on_remote(request: &RunAgentsRequest) -> bool {
+    matches!(
+        request.execution_mode,
+        RunAgentsExecutionMode::Remote { .. }
+    ) && request.harness_type.eq_ignore_ascii_case("opencode")
+}
+
 impl RunAgentsCardView {
     /// Construct a new card view from the streamed `RunAgentsRequest`.
     /// Eagerly builds the Reject / Edit / Accept buttons so the card
     /// can render them on its first frame; pickers stay lazy until the
-    /// user opens the editor.
+    /// user opens the editor. Subscribes to
+    /// [`RunAgentsExecutorEvent`] so the view's in-flight
+    /// `spawning` state stays in sync with the executor's
+    /// authoritative dispatch lifecycle.
     pub fn new(
         action_id: AIAgentActionId,
         request: &RunAgentsRequest,
         action_model: ModelHandle<BlocklistAIActionModel>,
+        run_agents_executor: ModelHandle<RunAgentsExecutor>,
         block_model: Rc<dyn AIBlockModel<View = AIBlock>>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
@@ -429,6 +427,25 @@ impl RunAgentsCardView {
             ctx,
         );
 
+        let action_id_for_subscription = action_id.clone();
+        ctx.subscribe_to_model(&run_agents_executor, move |me, _, event, ctx| match event {
+            RunAgentsExecutorEvent::SpawningStarted {
+                action_id,
+                snapshot,
+            } if action_id == &action_id_for_subscription => {
+                me.spawning = Some(*snapshot);
+                ctx.notify();
+            }
+            RunAgentsExecutorEvent::SpawningFinished { action_id }
+                if action_id == &action_id_for_subscription =>
+            {
+                me.spawning = None;
+                ctx.notify();
+            }
+            RunAgentsExecutorEvent::SpawningStarted { .. }
+            | RunAgentsExecutorEvent::SpawningFinished { .. } => {}
+        });
+
         Self {
             action_id,
             state: RunAgentsEditState::from_request(request),
@@ -444,41 +461,44 @@ impl RunAgentsCardView {
         }
     }
 
-    /// Returns the resolved `RunAgentsRequest` reflecting any user
-    /// edits. Read by `AIBlock::handle_run_agents_accept` after the
-    /// view emits `AcceptRequested`.
-    pub fn current_request(&self) -> RunAgentsRequest {
-        self.state.to_request()
-    }
-
-    /// Records the in-flight dispatch snapshot. Inserted by
-    /// `AIBlock::handle_run_agents_accept` immediately before the
-    /// async dispatch batch starts; doubles as the idempotency guard
-    /// for repeat Accept invocations.
-    pub fn set_spawning_snapshot(
-        &mut self,
-        snapshot: RunAgentsSpawningSnapshot,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        self.spawning = Some(snapshot);
-        ctx.notify();
-    }
-
-    /// Clears the in-flight dispatch snapshot. Called from the async
-    /// outcome callback before the terminal `RunAgentsResult` is
-    /// applied so the post-action card replaces the "Spawning…" card
-    /// on the next render.
-    pub fn clear_spawning_snapshot(&mut self, ctx: &mut ViewContext<Self>) {
-        self.spawning = None;
-        ctx.notify();
-    }
-
-    /// Returns true when this card is currently mid-dispatch. Read by
-    /// `AIBlock::handle_run_agents_accept` as an idempotency guard so
-    /// repeat invocations (Enter auto-repeat, double-click) don't
-    /// dispatch the batch twice.
+    /// Returns true when this card is currently mid-dispatch (a
+    /// [`RunAgentsExecutorEvent::SpawningStarted`] has fired and
+    /// `SpawningFinished` has not yet). The view-impl renderer reads
+    /// this to keep the card in the output column while a dispatch is
+    /// in-flight even after the parent block has stopped streaming.
     pub fn is_spawning(&self) -> bool {
         self.spawning.is_some()
+    }
+
+    /// Drives the executor-backed Accept path. Validates the resolved
+    /// request locally (the editor gates the Accept button via
+    /// `accept_disabled_reason`; this is the defence-in-depth check
+    /// for paths that bypass the button) and forwards the request to
+    /// [`BlocklistAIActionModel::execute_run_agents`].
+    ///
+    /// Public so that the parent `AIBlock` can route an Enter
+    /// keypress that arrived while focus was on the block (and not
+    /// the card) into the same dispatch path the card's own Accept
+    /// keybinding uses.
+    pub fn accept(&mut self, ctx: &mut ViewContext<Self>) {
+        self.handle_accept(ctx);
+    }
+
+    fn handle_accept(&mut self, ctx: &mut ViewContext<Self>) {
+        if self.spawning.is_some() {
+            return;
+        }
+        let request = self.state.to_request();
+        if is_opencode_on_remote(&request) {
+            log::warn!(
+                "RunAgentsCardView: refusing Accept for OpenCode+Cloud (unsupported per spec)"
+            );
+            return;
+        }
+        let action_id = self.action_id.clone();
+        self.action_model.update(ctx, |action_model, action_ctx| {
+            action_model.execute_run_agents(&action_id, request, action_ctx);
+        });
     }
 
     fn handle_toggle_edit(&mut self, ctx: &mut ViewContext<Self>) {
@@ -940,7 +960,7 @@ impl TypedActionView for RunAgentsCardView {
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         match action {
             RunAgentsCardViewAction::Accept => {
-                ctx.emit(RunAgentsCardViewEvent::AcceptRequested);
+                self.handle_accept(ctx);
             }
             RunAgentsCardViewAction::Reject => {
                 ctx.emit(RunAgentsCardViewEvent::RejectRequested);

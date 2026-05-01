@@ -1,8 +1,8 @@
-use super::{
-    compose_run_agents_child_prompt, run_agents_to_start_agent_mode, CollapsibleElementState,
-    CollapsibleExpansionState,
-};
+use super::{CollapsibleElementState, CollapsibleExpansionState};
 use crate::ai::agent::StartAgentExecutionMode;
+use crate::ai::blocklist::action_model::{
+    compose_run_agents_child_prompt, run_agents_to_start_agent_mode,
+};
 use crate::settings::AISettings;
 use crate::test_util::settings::initialize_settings_for_tests;
 use ai::agent::action::{RunAgentsAgentRunConfig, RunAgentsExecutionMode};

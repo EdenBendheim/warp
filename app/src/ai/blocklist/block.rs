@@ -17,27 +17,25 @@ pub use pending_user_query_block::{PendingUserQueryBlock, PendingUserQueryBlockE
 
 #[cfg(feature = "agent_mode_debug")]
 use self::code_diff_view::FileDiff;
+use crate::ai::agent::redaction::redact_secrets;
+use crate::ai::agent::telemetry::ForTelemetry as _;
 use crate::ai::agent::CancellationReason;
 use crate::ai::agent::PassiveSuggestionTrigger;
 use crate::ai::agent::SuggestPromptRequest;
 use crate::ai::agent::SuggestPromptResult;
 use crate::ai::agent::TodoOperation;
-use crate::ai::agent::redaction::redact_secrets;
-use crate::ai::agent::telemetry::ForTelemetry as _;
 use crate::ai::ai_document_view::DEFAULT_PLANNING_DOCUMENT_TITLE;
-use crate::ai::blocklist::BlocklistAIContextEvent;
-use crate::ai::blocklist::BlocklistAIContextModel;
-use crate::ai::blocklist::SuggestionDismissButtonTheme;
 use crate::ai::blocklist::agent_view::{AgentViewController, AgentViewEntryOrigin};
 use crate::ai::blocklist::context_model::AttachmentType;
 use crate::ai::blocklist::inline_action::code_diff_view::convert_file_edits_to_file_diffs;
 use crate::ai::blocklist::inline_action::suggested_unit_tests::SuggestedUnitTestsEvent;
 use crate::ai::blocklist::inline_action::suggested_unit_tests::SuggestedUnitTestsView;
+use crate::ai::blocklist::BlocklistAIContextEvent;
+use crate::ai::blocklist::BlocklistAIContextModel;
+use crate::ai::blocklist::SuggestionDismissButtonTheme;
 #[cfg(not(target_family = "wasm"))]
 use repo_metadata::repositories::DetectedRepositories;
 
-use crate::AIAgentTodoList;
-use crate::FileEdit;
 #[cfg(feature = "local_fs")]
 use crate::ai::skills::SkillOpenOrigin;
 use crate::ai::skills::{SkillManager, SkillTelemetryEvent};
@@ -45,18 +43,20 @@ use crate::code::editor::comment_editor::create_readonly_comment_markdown_editor
 use crate::code::editor::view::CodeEditorRenderOptions;
 use crate::code::editor_management::CodeSource;
 use crate::code_review::comment_rendering::{CommentViewCard, HeaderClickHandler};
-use crate::terminal::TerminalModel;
 use crate::terminal::model::BlockId;
 use crate::terminal::model_events::ModelEvent;
 use crate::terminal::model_events::ModelEventDispatcher;
 use crate::terminal::view::ambient_agent::AmbientAgentViewModel;
+use crate::terminal::TerminalModel;
 use crate::view_components::action_button::{
     ActionButtonTheme, NakedTheme, PrimaryTheme, SecondaryTheme,
 };
 use crate::view_components::compactible_action_button::CompactibleActionButton;
+use crate::AIAgentTodoList;
+use crate::FileEdit;
 use pathfinder_color::ColorU;
-use warp_core::ui::theme::Fill;
 use warp_core::ui::theme::color::internal_colors;
+use warp_core::ui::theme::Fill;
 
 use cli_controller::CLISubagentController;
 use cli_controller::CLISubagentEvent;
@@ -65,15 +65,12 @@ use model::AIBlockOutputStatus;
 use parking_lot::FairMutex;
 use settings::Setting as _;
 use warp_core::features::FeatureFlag;
+use warpui::elements::get_rich_content_position_id;
 use warpui::elements::ClippedScrollStateHandle;
 use warpui::elements::TableStateHandle;
-use warpui::elements::get_rich_content_position_id;
 use warpui::ui_components::radio_buttons::RadioButtonStateHandle;
 
-use crate::Appearance;
-use crate::LLMPreferences;
-use crate::ai::AIRequestUsageModel;
-use crate::ai::AIRequestUsageModelEvent;
+use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::agent::AIAgentActionResultType;
 use crate::ai::agent::AIAgentOutput;
 use crate::ai::agent::AIAgentTextSection;
@@ -81,7 +78,6 @@ use crate::ai::agent::AIIdentifiers;
 use crate::ai::agent::MessageId;
 use crate::ai::agent::RequestFileEditsResult;
 use crate::ai::agent::SearchCodebaseResult;
-use crate::ai::agent::conversation::AIConversationId;
 use crate::ai::blocklist::action_model::NewConversationDecision;
 use crate::ai::blocklist::block::keyboard_navigable_buttons::KeyboardNavigableButtonBuilder;
 use crate::ai::blocklist::block::keyboard_navigable_buttons::KeyboardNavigableButtons;
@@ -92,7 +88,7 @@ use crate::ai::blocklist::inline_action::aws_bedrock_credentials_error::{
     AwsBedrockCredentialsErrorEvent, AwsBedrockCredentialsErrorView,
 };
 use crate::ai::blocklist::inline_action::run_agents_card_view::{
-    self, RunAgentsCardView, RunAgentsCardViewEvent, RunAgentsSpawningSnapshot,
+    self, RunAgentsCardView, RunAgentsCardViewEvent,
 };
 use crate::ai::blocklist::inline_action::search_codebase::{
     SearchCodebaseView, SearchCodebaseViewEvent,
@@ -100,6 +96,8 @@ use crate::ai::blocklist::inline_action::search_codebase::{
 use crate::ai::blocklist::inline_action::web_fetch::WebFetchView;
 use crate::ai::blocklist::inline_action::web_search::WebSearchView;
 use crate::ai::facts::{AIFact, AIMemory, CloudAIFactModel};
+use crate::ai::AIRequestUsageModel;
+use crate::ai::AIRequestUsageModelEvent;
 use crate::cloud_object::model::generic_string_model::GenericStringObjectId;
 use crate::cloud_object::model::persistence::CloudModel;
 use crate::code_review::telemetry_event::CodeReviewPaneEntrypoint;
@@ -109,11 +107,13 @@ use crate::settings::InputSettings;
 use crate::terminal::view::{CodeDiffAction, TerminalAction};
 use crate::ui_components::icons::Icon;
 #[cfg(feature = "local_fs")]
-use crate::util::openable_file_type::{FileTarget, is_supported_image_file};
+use crate::util::openable_file_type::{is_supported_image_file, FileTarget};
 use crate::view_components::action_button::ActionButton;
 use crate::view_components::action_button::ButtonSize;
 use crate::view_components::action_button::KeystrokeSource;
 use crate::workspaces::user_workspaces::UserWorkspaces;
+use crate::Appearance;
+use crate::LLMPreferences;
 use indexmap::IndexMap;
 use parking_lot::{Mutex, RwLock};
 use pathfinder_geometry::vector::vec2f;
@@ -144,23 +144,22 @@ use warp_editor::{
     content::buffer::InitialBufferState, render::element::VerticalExpansionBehavior,
 };
 use warpui::{
-    AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
-    ViewHandle, WeakViewHandle, WindowId,
     assets::asset_cache::AssetCache,
-    r#async::{SpawnedFutureHandle, Timer},
     clipboard::ClipboardContent,
     elements::{MouseStateHandle, SelectionBound, SelectionHandle},
     image_cache::ImageType,
     keymap::FixedBinding,
+    r#async::{SpawnedFutureHandle, Timer},
     text::SelectionType,
+    AppContext, Entity, EntityId, ModelHandle, SingletonEntity, TypedActionView, View, ViewContext,
+    ViewHandle, WeakViewHandle, WindowId,
 };
 
 use crate::ai::agent::{
-    AIAgentAction, AIAgentActionId, AIAgentActionResult, AIAgentActionType, AIAgentAttachment,
-    AIAgentCitation, AIAgentContext, AIAgentOutputMessage, AIAgentOutputMessageType,
-    CreateDocumentsRequest, CreateDocumentsResult, DocumentToCreate, EditDocumentsResult,
-    ProgrammingLanguage, RenderableAIError, RequestCommandOutputResult, SuggestedLoggingId,
-    SummarizationType,
+    AIAgentAction, AIAgentActionId, AIAgentActionType, AIAgentAttachment, AIAgentCitation,
+    AIAgentContext, AIAgentOutputMessage, AIAgentOutputMessageType, CreateDocumentsRequest,
+    CreateDocumentsResult, DocumentToCreate, EditDocumentsResult, ProgrammingLanguage,
+    RenderableAIError, RequestCommandOutputResult, SuggestedLoggingId, SummarizationType,
 };
 use crate::ai::blocklist::inline_action::code_diff_view;
 use crate::ai::blocklist::inline_action::requested_command::{
@@ -184,15 +183,8 @@ use crate::terminal::model::session::active_session::{ActiveSession, ActiveSessi
 use crate::terminal::{ShellLaunchData, TerminalView};
 use crate::view_components::DismissibleToast;
 use crate::workspace::{ForkAIConversationParams, ForkedConversationDestination, WorkspaceAction};
-use crate::{ToastStack, report_error, report_if_error};
-use ai::agent::action::{AskUserQuestionItem, InsertReviewComment};
-use ai::agent::action::{RunAgentsAgentRunConfig, RunAgentsExecutionMode, RunAgentsRequest};
-use ai::agent::action_result::{
-    RunAgentsAgentOutcome, RunAgentsAgentOutcomeKind, RunAgentsLaunchedExecutionMode,
-};
-use ai::skills::SkillReference;
-
-use crate::ai::blocklist::StartAgentOutcome;
+use crate::{report_error, report_if_error, ToastStack};
+use ai::agent::action::{AskUserQuestionItem, InsertReviewComment, RunAgentsRequest};
 
 use crate::editor::InteractionState;
 use crate::server::telemetry::{AutonomySettingToggleSource, InteractionSource};
@@ -206,7 +198,7 @@ use crate::terminal::{
     find::TerminalFindModel,
     model::secrets::RichContentSecretTooltipInfo,
     safe_mode_settings::{
-        SafeModeSettings, SafeModeSettingsChangedEvent, get_secret_obfuscation_mode,
+        get_secret_obfuscation_mode, SafeModeSettings, SafeModeSettingsChangedEvent,
     },
     view::{RichContentLink, RichContentLinkTooltipInfo},
 };
@@ -217,12 +209,12 @@ use super::inline_action::requested_action::CTRL_C_KEYSTROKE;
 use super::inline_action::requested_action::ENTER_KEYSTROKE;
 use super::suggested_agent_mode_workflow_modal::SuggestedAgentModeWorkflowAndId;
 use super::suggested_rule_modal::SuggestedRuleAndId;
-use crate::PrivacySettings;
-use crate::code_review::CodeReviewTelemetryEvent;
 use crate::code_review::comments::{
-    AttachedReviewComment, CommentId, CommentOrigin, attach_pending_imported_comments,
-    convert_insert_review_comments,
+    attach_pending_imported_comments, convert_insert_review_comments, AttachedReviewComment,
+    CommentId, CommentOrigin,
 };
+use crate::code_review::CodeReviewTelemetryEvent;
+use crate::PrivacySettings;
 use crate::{
     ai::agent::{AIAgentInput, ServerOutputId},
     send_telemetry_from_ctx,
@@ -230,11 +222,9 @@ use crate::{
     settings::AISettings,
 };
 
-use super::ResponseStreamId;
 use super::controller::ClientIdentifiers;
+use super::ResponseStreamId;
 use super::{
-    BlocklistAIActionModel, BlocklistAIController, BlocklistAIHistoryEvent,
-    BlocklistAIHistoryModel, BlocklistAIPermissions,
     action_model::{AIActionStatus, BlocklistAIActionEvent, RequestFileEditsFormatKind},
     code_block::CodeSnippetButtonHandles,
     inline_action::code_diff_view::{
@@ -243,6 +233,8 @@ use super::{
     inline_action::requested_command_attribution::is_command_copied_from_document,
     permissions::is_agent_mode_autonomy_allowed,
     telemetry_banner::should_collect_ai_ugc_telemetry,
+    BlocklistAIActionModel, BlocklistAIController, BlocklistAIHistoryEvent,
+    BlocklistAIHistoryModel, BlocklistAIPermissions,
 };
 
 /// The default display name used for the user if they have no associated display name.
@@ -4065,10 +4057,8 @@ impl AIBlock {
                             ..
                         } if speedbump_action_id == action_id && *shown.lock() => {
                             BlocklistAIPermissions::handle(ctx).update(ctx, |permissions, ctx| {
-                                report_if_error!(
-                                    permissions
-                                        .set_should_autoexecute_readonly_commands(*checked, ctx)
-                                );
+                                report_if_error!(permissions
+                                    .set_should_autoexecute_readonly_commands(*checked, ctx));
                             });
                         }
                         AutonomySettingSpeedbump::ShouldShowForFileAccess {
@@ -4120,12 +4110,8 @@ impl AIBlock {
                                     permission,
                                     AgentModeCodingPermissionsType::AllowReadingSpecificFiles
                                 ) {
-                                    report_if_error!(
-                                        permissions.add_filepath_to_code_read_allowlist(
-                                            root_repo_path,
-                                            ctx
-                                        )
-                                    );
+                                    report_if_error!(permissions
+                                        .add_filepath_to_code_read_allowlist(root_repo_path, ctx));
                                 }
                             });
                         }
@@ -5864,11 +5850,11 @@ impl TypedActionView for AIBlock {
             }
             AIBlockAction::ExecuteNextPendingAction => {
                 // If the next pending action is a RunAgents tool call,
-                // delegate to the RunAgents accept handler so Enter
-                // triggers the same path as clicking Accept on the
-                // confirmation card. (Focus normally goes to the card
-                // view via `focus_subview_if_necessary`, in which case
-                // the card's own keybinding fires; this handler covers
+                // delegate to the per-card view's Accept handler so
+                // Enter routes through the executor-backed dispatch
+                // path. (Focus normally goes to the card view via
+                // `focus_subview_if_necessary`, in which case the
+                // card's own keybinding fires; this handler covers
                 // the case where focus is still on AIBlock.)
                 let run_agents_id = self
                     .action_model
@@ -5878,7 +5864,14 @@ impl TypedActionView for AIBlock {
                     .last()
                     .map(|action| action.id.clone());
                 if let Some(run_agents_id) = run_agents_id {
-                    self.handle_run_agents_accept(&run_agents_id, ctx);
+                    if let Some(card_view) = self.run_agents_card_views.get(&run_agents_id).cloned()
+                    {
+                        card_view.update(ctx, |view, ctx_view| view.accept(ctx_view));
+                    } else {
+                        log::warn!(
+                            "ExecuteNextPendingAction: no RunAgentsCardView for {run_agents_id:?}"
+                        );
+                    }
                 } else {
                     self.action_model.update(ctx, |action_model, ctx| {
                         action_model.execute_next_action_for_user(self.conversation_id(), ctx)
@@ -6002,11 +5995,9 @@ impl TypedActionView for AIBlock {
                     }
                 });
                 AISettings::handle(ctx).update(ctx, |settings, ctx| {
-                    report_if_error!(
-                        settings
-                            .rule_suggestions_enabled_internal
-                            .set_value(false, ctx)
-                    );
+                    report_if_error!(settings
+                        .rule_suggestions_enabled_internal
+                        .set_value(false, ctx));
                 });
                 ctx.notify();
             }
@@ -6444,7 +6435,10 @@ impl AIBlock {
     /// Lazily create the per-action `RunAgentsCardView` so the
     /// orchestrate confirmation card can render on its first frame.
     /// Idempotent: re-running with an already-populated entry leaves
-    /// it unchanged.
+    /// it unchanged. The view drives Accept dispatch through
+    /// [`BlocklistAIActionModel::execute_run_agents`] itself; only
+    /// `RejectRequested` flows back here so the existing
+    /// [`Self::cancel_action`] entry point handles cancellation.
     fn ensure_run_agents_card_view(
         &mut self,
         action_id: &AIAgentActionId,
@@ -6457,331 +6451,27 @@ impl AIBlock {
         let action_id_clone = action_id.clone();
         let request_clone = request.clone();
         let action_model = self.action_model.clone();
+        let run_agents_executor = self.action_model.as_ref(ctx).run_agents_executor(ctx);
         let block_model = self.model.clone();
         let view = ctx.add_typed_action_view(move |ctx_view| {
             RunAgentsCardView::new(
                 action_id_clone,
                 &request_clone,
                 action_model,
+                run_agents_executor,
                 block_model,
                 ctx_view,
             )
         });
         let action_id_for_event = action_id.clone();
         ctx.subscribe_to_view(&view, move |me, _, event, ctx| match event {
-            RunAgentsCardViewEvent::AcceptRequested => {
-                me.handle_run_agents_accept(&action_id_for_event, ctx);
-            }
             RunAgentsCardViewEvent::RejectRequested => {
                 me.cancel_action(&action_id_for_event, ctx);
             }
         });
         self.run_agents_card_views.insert(action_id.clone(), view);
     }
-
-    /// Drives the orchestrate dispatch flow when the card view emits
-    /// `AcceptRequested` (or when an Enter keypress reaches the
-    /// `AIBlock` instead of the focused card view). Reads the resolved
-    /// `RunAgentsRequest` from the card view, sources the live
-    /// `task_id` from the action model, snapshots the in-flight
-    /// dispatch on the card view, and runs the per-child
-    /// StartAgent dispatch loop.
-    fn handle_run_agents_accept(
-        &mut self,
-        action_id: &AIAgentActionId,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        // Idempotency guard: ask the card view whether it's already
-        // mid-dispatch. The view sets `is_spawning() == true` for the
-        // duration of the dispatch batch; repeat invocations
-        // short-circuit here.
-        let card_view = match self.run_agents_card_views.get(action_id).cloned() {
-            Some(view) => view,
-            None => {
-                log::warn!("RunAgentsAccept: no card view found for id={action_id:?}");
-                return;
-            }
-        };
-        if card_view.as_ref(ctx).is_spawning() {
-            return;
-        }
-
-        // Read the resolved request (with any user edits) from the
-        // card view.
-        let request = card_view.as_ref(ctx).current_request();
-
-        // Validation gate: OpenCode + Cloud is rejected pre-flight to
-        // mirror the editor's `accept_disabled_reason` behaviour for
-        // dispatch paths that didn't go through the editor (e.g. an
-        // Enter keypress on a never-edited card).
-        if matches!(
-            request.execution_mode,
-            RunAgentsExecutionMode::Remote { .. }
-        ) && request.harness_type.eq_ignore_ascii_case("opencode")
-        {
-            log::warn!("RunAgentsAccept: OpenCode is not supported on Cloud yet; rejecting accept");
-            return;
-        }
-
-        // Source the action's task_id from the action model.
-        let pending = self
-            .action_model
-            .as_ref(ctx)
-            .get_pending_action_by_id(action_id)
-            .map(|action| action.task_id.clone());
-        let Some(task_id) = pending else {
-            log::warn!("RunAgentsAccept: no pending action found for id={action_id:?}");
-            return;
-        };
-
-        if request.agent_run_configs.is_empty() {
-            log::warn!("RunAgentsAccept: empty agent_run_configs; surfacing failure result");
-            self.apply_run_agents_action_result(
-                action_id,
-                task_id,
-                ai::agent::action_result::RunAgentsResult::Failure {
-                    error: "orchestrate: empty agent_run_configs".to_string(),
-                },
-                ctx,
-            );
-            return;
-        }
-
-        let parent_conversation_id = self.client_ids.conversation_id;
-        let parent_run_id = BlocklistAIHistoryModel::as_ref(ctx)
-            .conversation(&parent_conversation_id)
-            .and_then(|c| c.run_id());
-        let run_model_id = request.model_id.clone();
-        let run_harness_type = request.harness_type.clone();
-        let run_execution_mode = request.execution_mode.clone();
-        let agent_run_configs = request.agent_run_configs.clone();
-        let base_prompt = request.base_prompt.clone();
-        let run_skills = request.skills.clone();
-
-        let executor_handle = self.action_model.as_ref(ctx).start_agent_executor(ctx);
-
-        // Record the in-flight dispatch on the card view so the next
-        // render shows the "Spawning N agents…" card and so repeat
-        // Accept invocations short-circuit on the idempotency guard.
-        card_view.update(ctx, |view, ctx_view| {
-            view.set_spawning_snapshot(
-                RunAgentsSpawningSnapshot {
-                    agent_count: agent_run_configs.len(),
-                },
-                ctx_view,
-            );
-        });
-        ctx.notify();
-
-        enum ChildSlot {
-            Failed(String),
-            Pending(async_channel::Receiver<StartAgentOutcome>),
-        }
-
-        let mut slots: Vec<ChildSlot> = Vec::with_capacity(agent_run_configs.len());
-        for cfg in &agent_run_configs {
-            let prompt = compose_run_agents_child_prompt(&base_prompt, &cfg.prompt);
-            let mode = run_agents_to_start_agent_mode(
-                &run_execution_mode,
-                &run_harness_type,
-                &run_model_id,
-                &run_skills,
-                cfg,
-            );
-            let mode = match mode {
-                Ok(mode) => mode,
-                Err(error) => {
-                    slots.push(ChildSlot::Failed(error));
-                    continue;
-                }
-            };
-            if matches!(run_execution_mode, RunAgentsExecutionMode::Remote { .. })
-                && parent_run_id.is_none()
-            {
-                slots.push(ChildSlot::Failed(
-                    "Remote child agents require the parent run_id to be available.".to_string(),
-                ));
-                continue;
-            }
-            let receiver = executor_handle.update(ctx, |executor, model_ctx| {
-                executor.dispatch(
-                    cfg.name.clone(),
-                    prompt,
-                    mode,
-                    None, /* lifecycle_subscription */
-                    parent_conversation_id,
-                    parent_run_id.clone(),
-                    model_ctx,
-                )
-            });
-            slots.push(ChildSlot::Pending(receiver));
-        }
-
-        let action_id_for_result = action_id.clone();
-        let agent_run_configs_for_result = agent_run_configs.clone();
-        let card_view_for_result = card_view.clone();
-        ctx.spawn(
-            async move {
-                let mut outcomes: Vec<RunAgentsAgentOutcomeKind> = Vec::with_capacity(slots.len());
-                for slot in slots {
-                    let kind = match slot {
-                        ChildSlot::Failed(error) => RunAgentsAgentOutcomeKind::Failed { error },
-                        ChildSlot::Pending(receiver) => match receiver.recv().await {
-                            Ok(StartAgentOutcome::Started { agent_id }) => {
-                                RunAgentsAgentOutcomeKind::Launched { agent_id }
-                            }
-                            Ok(StartAgentOutcome::Error(error)) => {
-                                RunAgentsAgentOutcomeKind::Failed { error }
-                            }
-                            Err(_) => RunAgentsAgentOutcomeKind::Failed {
-                                error: "Cancelled before launch".to_string(),
-                            },
-                        },
-                    };
-                    outcomes.push(kind);
-                }
-                outcomes
-            },
-            move |me, outcomes, ctx| {
-                let agents = agent_run_configs_for_result
-                    .iter()
-                    .zip(outcomes)
-                    .map(|(cfg, kind)| RunAgentsAgentOutcome {
-                        name: cfg.name.clone(),
-                        kind,
-                    })
-                    .collect();
-                let launched_mode = match &run_execution_mode {
-                    RunAgentsExecutionMode::Local => RunAgentsLaunchedExecutionMode::Local,
-                    RunAgentsExecutionMode::Remote {
-                        environment_id,
-                        worker_host,
-                        computer_use_enabled,
-                    } => RunAgentsLaunchedExecutionMode::Remote {
-                        environment_id: environment_id.clone(),
-                        worker_host: worker_host.clone(),
-                        computer_use_enabled: *computer_use_enabled,
-                    },
-                };
-                let result = ai::agent::action_result::RunAgentsResult::Launched {
-                    model_id: run_model_id,
-                    harness_type: run_harness_type,
-                    execution_mode: launched_mode,
-                    agents,
-                };
-                // Clear the in-flight snapshot before applying the
-                // terminal result so the post-action card replaces the
-                // "Spawning…" card on the next render.
-                card_view_for_result.update(ctx, |view, ctx_view| {
-                    view.clear_spawning_snapshot(ctx_view);
-                });
-                me.apply_run_agents_action_result(&action_id_for_result, task_id, result, ctx);
-            },
-        );
-    }
-
-    /// Helper to apply a terminal `RunAgentsResult` to the action model
-    /// so the action is removed from the pending queue and the result is
-    /// mirrored back to the agent on the next request.
-    fn apply_run_agents_action_result(
-        &mut self,
-        action_id: &AIAgentActionId,
-        task_id: crate::ai::agent::task::TaskId,
-        result: ai::agent::action_result::RunAgentsResult,
-        ctx: &mut ViewContext<Self>,
-    ) {
-        let conversation_id = self.client_ids.conversation_id;
-        let action_result = AIAgentActionResult {
-            id: action_id.clone(),
-            task_id,
-            result: AIAgentActionResultType::RunAgents(result),
-        };
-        self.action_model.update(ctx, |action_model, ctx| {
-            action_model.apply_finished_action_result(conversation_id, action_result, ctx);
-        });
-    }
 }
-
-/// Compose the per-child prompt per spec invariant:
-/// `base_prompt + "\n\n" + agent_run_configs[i].prompt` when both are
-/// non-empty, just `base_prompt` when the per-agent `prompt` is empty,
-/// and just the per-agent `prompt` when `base_prompt` is empty
-/// (defensive).
-fn compose_run_agents_child_prompt(base_prompt: &str, per_agent_prompt: &str) -> String {
-    let base_trimmed = base_prompt.trim();
-    let per_agent_trimmed = per_agent_prompt.trim();
-    match (base_trimmed.is_empty(), per_agent_trimmed.is_empty()) {
-        (false, false) => format!("{base_prompt}\n\n{per_agent_prompt}"),
-        (false, true) => base_prompt.to_string(),
-        (true, false) => per_agent_prompt.to_string(),
-        (true, true) => String::new(),
-    }
-}
-
-/// Translate a single `(orchestrate_execution_mode, harness_type,
-/// model_id, per-agent config)` tuple into the `StartAgentExecutionMode`
-/// the StartAgent executor expects.
-///
-/// Returns `Err(reason)` if the combination is rejected pre-flight (e.g.
-/// OpenCode+Remote or an unrecognised local harness); the caller surfaces
-/// the reason as a per-child `Failed` outcome.
-fn run_agents_to_start_agent_mode(
-    run_execution_mode: &RunAgentsExecutionMode,
-    run_harness_type: &str,
-    run_model_id: &str,
-    run_skills: &[SkillReference],
-    cfg: &RunAgentsAgentRunConfig,
-) -> Result<crate::ai::agent::StartAgentExecutionMode, String> {
-    use crate::ai::agent::StartAgentExecutionMode as M;
-    match run_execution_mode {
-        RunAgentsExecutionMode::Local => {
-            // Empty/oz harness uses the legacy local Oz path
-            // (`harness_type: None`). Other harnesses route through the
-            // Local-with-harness arm.
-            let trimmed = run_harness_type.trim();
-            // Honor the user's run-wide model selection on local launches.
-            // `propagate_parent_agent_settings` would otherwise inherit the
-            // parent's preferred LLM and silently discard this choice.
-            let trimmed_model_id = run_model_id.trim();
-            let model_id = (!trimmed_model_id.is_empty()).then(|| trimmed_model_id.to_string());
-            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("oz") {
-                Ok(M::Local {
-                    harness_type: None,
-                    model_id,
-                })
-            } else {
-                Ok(M::Local {
-                    harness_type: Some(trimmed.to_string()),
-                    model_id,
-                })
-            }
-        }
-        RunAgentsExecutionMode::Remote {
-            environment_id,
-            worker_host,
-            computer_use_enabled,
-        } => {
-            // OpenCode is unsupported on Remote per `start_agent::execute`;
-            // surface as a child-level failure so other children can still
-            // launch.
-            if run_harness_type.eq_ignore_ascii_case("opencode") {
-                return Err(
-                    "Remote child agents do not support the opencode harness yet.".to_string(),
-                );
-            }
-            Ok(M::Remote {
-                environment_id: environment_id.clone(),
-                skill_references: run_skills.to_vec(),
-                model_id: run_model_id.to_string(),
-                computer_use_enabled: *computer_use_enabled,
-                worker_host: worker_host.clone(),
-                harness_type: run_harness_type.to_string(),
-                title: cfg.title.clone(),
-            })
-        }
-    }
-}
-
 #[cfg(test)]
 #[path = "block_tests.rs"]
 mod tests;
