@@ -509,7 +509,7 @@ tikv-jemalloc-sys = { git = "https://github.com/warpdotdev/jemallocator.git", re
 
 [patch."https://github.com/warpdotdev/warp-proto-apis.git"]
 # Pinned against the sibling worktree at
-# /Users/matthew/src/orchestration-tool-2/warp-proto-apis (commit 76b135b on
+# /Users/matthew/src/orchestration-tool-2/warp-proto-apis (commit f308712 on
 # branch matthew/orchestration-tool-2). Will be swapped to a registry / git
 # rev pin once warp-proto-apis PR #299 lands and a release is cut.
 warp_multi_agent_api = { path = "../warp-proto-apis/apis/multi_agent/v1/gen/rust" }

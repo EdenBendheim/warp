@@ -1333,6 +1333,25 @@ impl From<RunAgentsAgentOutcome> for api::run_agents_result::AgentOutcome {
     }
 }
 
+/// Maps a client-side harness string identifier (e.g. "oz", "claude")
+/// to the new proto `Harness` oneof. Returns `None` for empty,
+/// unrecognized, or `"unknown"` strings; callers leave
+/// `resolved_harness` unset in that case.
+pub(super) fn build_api_harness(harness_type: &str) -> Option<api::Harness> {
+    let normalized = harness_type.trim().to_ascii_lowercase().replace('_', "-");
+    let variant = match normalized.as_str() {
+        "oz" => api::harness::Variant::Oz(api::harness::Oz {}),
+        "claude" | "claude-code" => api::harness::Variant::ClaudeCode(api::harness::ClaudeCode {}),
+        "opencode" | "open-code" => api::harness::Variant::OpenCode(api::harness::OpenCode {}),
+        "gemini" => api::harness::Variant::Gemini(api::harness::Gemini {}),
+        "codex" => api::harness::Variant::Codex(api::harness::Codex {}),
+        _ => return None,
+    };
+    Some(api::Harness {
+        variant: Some(variant),
+    })
+}
+
 impl TryFrom<RunAgentsResult> for api::request::input::tool_call_result::Result {
     type Error = ConvertToAPITypeError;
 
@@ -1349,9 +1368,7 @@ impl TryFrom<RunAgentsResult> for api::request::input::tool_call_result::Result 
                         outcome: Some(api::run_agents_result::Outcome::Launched(
                             api::run_agents_result::Launched {
                                 resolved_model_id: model_id,
-                                resolved_harness: Some(api::Harness {
-                                    r#type: harness_type,
-                                }),
+                                resolved_harness: build_api_harness(&harness_type),
                                 resolved_execution_mode: Some(execution_mode.into()),
                                 agents: agents.into_iter().map(Into::into).collect(),
                             },

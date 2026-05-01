@@ -1586,10 +1586,10 @@ pub(crate) fn convert_tool_call_result_to_input(
                         .collect();
                     RunAgentsResult::Launched {
                         model_id: launched.resolved_model_id.clone(),
-                        harness_type: launched
-                            .resolved_harness
-                            .as_ref()
-                            .map(|h| h.r#type.clone())
+                        harness_type:
+                            crate::ai::agent::api::convert_from::convert_run_agents_harness(
+                                launched.resolved_harness.as_ref(),
+                            )
                             .unwrap_or_default(),
                         execution_mode,
                         agents,

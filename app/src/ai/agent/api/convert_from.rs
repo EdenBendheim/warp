@@ -82,6 +82,26 @@ fn convert_start_agent_v2_harness_type(
         .filter(|harness_type| !harness_type.trim().is_empty())
 }
 
+/// Maps the new proto `Harness` oneof to a client-side string identifier
+/// (e.g. "oz", "claude"). Returns `None` for an unset variant; an
+/// unrecognized variant maps to `"unknown"` (the same sentinel used for
+/// graceful display on read-only paths). The orchestration tool's
+/// resolved-harness path treats `None` and `"unknown"` identically: both
+/// fall through to an empty `harness_type` on the action.
+pub(crate) fn convert_run_agents_harness(harness: Option<&api::Harness>) -> Option<String> {
+    let variant = harness?.variant.as_ref()?;
+    Some(
+        match variant {
+            api::harness::Variant::Oz(_) => "oz",
+            api::harness::Variant::ClaudeCode(_) => "claude",
+            api::harness::Variant::OpenCode(_) => "opencode",
+            api::harness::Variant::Gemini(_) => "gemini",
+            api::harness::Variant::Codex(_) => "codex",
+        }
+        .to_string(),
+    )
+}
+
 fn convert_start_agent_execution_mode(
     execution_mode: Option<api::start_agent::ExecutionMode>,
 ) -> StartAgentExecutionMode {
@@ -126,10 +146,7 @@ fn convert_run_agents(run_agents: api::RunAgents) -> AIAgentActionType {
             .filter_map(convert_skill_reference)
             .collect(),
         model_id,
-        harness_type: harness
-            .map(|h| h.r#type)
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_default(),
+        harness_type: convert_run_agents_harness(harness.as_ref()).unwrap_or_default(),
         execution_mode: convert_run_agents_execution_mode(execution_mode),
         agent_run_configs: agent_run_configs
             .into_iter()
