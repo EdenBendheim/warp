@@ -12,8 +12,8 @@ use crate::util::truncation::truncate_from_end;
 use ai::agent::file_locations::group_file_contexts_for_display;
 
 use crate::ai::blocklist::block::view_impl::common::{
-    MaybeShimmeringText, BLOCKED_ACTION_MESSAGE_FOR_GREP_OR_FILE_GLOB,
-    BLOCKED_ACTION_MESSAGE_FOR_READING_FILES, BLOCKED_ACTION_MESSAGE_FOR_SEARCHING_CODEBASE,
+    BLOCKED_ACTION_MESSAGE_FOR_GREP_OR_FILE_GLOB, BLOCKED_ACTION_MESSAGE_FOR_READING_FILES,
+    BLOCKED_ACTION_MESSAGE_FOR_SEARCHING_CODEBASE, MaybeShimmeringText,
 };
 use crate::ai::blocklist::inline_action::aws_bedrock_credentials_error::AwsBedrockCredentialsErrorView;
 use crate::ai::blocklist::inline_action::create_or_edit_document::CreateOrEditDocumentAction;
@@ -24,12 +24,12 @@ use crate::ai::skills::{
     icon_override_for_skill_name, render_skill_button, skill_path_from_file_path,
 };
 
+use crate::AIAgentTodoList;
 use crate::code::editor_management::CodeSource;
 use crate::terminal::shared_session::SharedSessionStatus;
 use crate::view_components::compactible_action_button::{
     CompactibleActionButton, RenderCompactibleActionButton, SMALL_SIZE_SWITCH_THRESHOLD,
 };
-use crate::AIAgentTodoList;
 
 #[allow(unused_imports)]
 use std::path::{Component, Path, PathBuf};
@@ -40,15 +40,15 @@ use ai::agent::action::{
 use ai::skills::SkillReference;
 use pathfinder_color::ColorU;
 use pathfinder_geometry::vector::vec2f;
-use ui_components::{button, Component as _, Options as _};
+use ui_components::{Component as _, Options as _, button};
 use warp_core::ui::theme::color::internal_colors;
 #[allow(unused_imports)]
-use warp_util::path::{common_path, CleanPathResult};
+use warp_util::path::{CleanPathResult, common_path};
+use warpui::EntityId;
 use warpui::elements::new_scrollable::SingleAxisConfig;
 use warpui::elements::{
     ChildAnchor, NewScrollable, OffsetPositioning, ParentAnchor, ParentOffsetBounds, Stack,
 };
-use warpui::EntityId;
 
 use crate::ai::blocklist::block::{
     CollapsibleElementState, CollapsibleExpansionState, FinishReason, ImportedCommentGroup,
@@ -56,36 +56,38 @@ use crate::ai::blocklist::block::{
 use indexmap::IndexMap;
 use std::{cell::OnceCell, cmp::Ordering, collections::HashMap, rc::Rc, sync::Arc};
 
-use crate::util::link_detection::{add_link_detection_mouse_interactions, DetectedLinksState};
+use crate::util::link_detection::{DetectedLinksState, add_link_detection_mouse_interactions};
 use crate::{
+    FeatureFlag,
     ai::{
         agent::{
-            icons::{self, gray_stop_icon, yellow_stop_icon},
             AIAgentAction, AIAgentActionId, AIAgentActionResult, AIAgentActionResultType,
             AIAgentActionType, AIAgentCitation, AIAgentOutputMessage, AIAgentOutputMessageType,
             AIAgentText, AIAgentTextSection, MessageId, ReadFilesRequest,
             RequestCommandOutputResult, SearchCodebaseFailureReason, SearchCodebaseResult,
             SuggestNewConversationResult, SummarizationType,
+            icons::{self, gray_stop_icon, yellow_stop_icon},
         },
         blocklist::{
+            AIBlockResponseRating, BlocklistAIActionModel, SuggestionChipView,
             action_model::AIActionStatus,
             block::{
-                model::{AIBlockModel, AIBlockModelHelper, AIBlockOutputStatus},
                 AIBlock, AIBlockAction, AIBlockStateHandles, ActionButtons,
                 AutonomySettingSpeedbump, EmbeddedCodeEditorView, RequestedEdit, TextLocation,
                 TodoListElementState,
+                model::{AIBlockModel, AIBlockModelHelper, AIBlockOutputStatus},
             },
             history_model::BlocklistAIHistoryModel,
             inline_action::{
                 ask_user_question_view::AskUserQuestionView,
                 inline_action_header::{
-                    HeaderConfig, InteractionMode, INLINE_ACTION_HEADER_VERTICAL_PADDING,
-                    INLINE_ACTION_HORIZONTAL_PADDING,
+                    HeaderConfig, INLINE_ACTION_HEADER_VERTICAL_PADDING,
+                    INLINE_ACTION_HORIZONTAL_PADDING, InteractionMode,
                 },
                 inline_action_icons::{self, icon_size},
                 requested_action::{
-                    render_requested_action_body_text, render_requested_action_row_for_text,
-                    RenderableAction,
+                    RenderableAction, render_requested_action_body_text,
+                    render_requested_action_row_for_text,
                 },
                 requested_command::RequestedCommand,
                 search_codebase::SearchCodebaseView,
@@ -94,7 +96,6 @@ use crate::{
                 web_search::WebSearchView,
             },
             keyboard_navigable_buttons::KeyboardNavigableButtons,
-            AIBlockResponseRating, BlocklistAIActionModel, SuggestionChipView,
         },
         paths::shell_native_absolute_path,
         skills::SkillManager,
@@ -106,29 +107,29 @@ use crate::{
     ui_components::{blended_colors, buttons::icon_button, icons::Icon},
     view_components::action_button::ActionButton,
     workspace::WorkspaceAction,
-    FeatureFlag,
 };
 use itertools::Itertools;
 use markdown_parser::{FormattedText, FormattedTextFragment, FormattedTextLine};
 use warp_core::channel::ChannelState;
 
+use super::CONTENT_HORIZONTAL_PADDING;
 use super::common::{
-    format_elapsed_seconds, render_debug_footer, render_failed_output, render_informational_footer,
-    render_output_status_text, render_scrollable_collapsible_content, render_text_sections,
-    DebugFooterProps, FailedOutputProps, FindContext, TextSectionsProps,
-    STATUS_FOOTER_VERTICAL_PADDING, STATUS_ICON_SIZE_DELTA,
+    DebugFooterProps, FailedOutputProps, FindContext, STATUS_FOOTER_VERTICAL_PADDING,
+    STATUS_ICON_SIZE_DELTA, TextSectionsProps, format_elapsed_seconds, render_debug_footer,
+    render_failed_output, render_informational_footer, render_output_status_text,
+    render_scrollable_collapsible_content, render_text_sections,
 };
 use super::imported_comments::render_imported_comments;
 use super::orchestration;
-use super::run_agents;
 use super::todos::render_todos;
-use super::CONTENT_HORIZONTAL_PADDING;
 use super::{
-    add_highlights_to_rich_text, render_autonomy_checkbox_setting_speedbump_footer,
-    render_citation_chips, todos::render_completed_todo_items, WithContentItemSpacing,
-    CONTENT_ITEM_VERTICAL_MARGIN,
+    CONTENT_ITEM_VERTICAL_MARGIN, WithContentItemSpacing, add_highlights_to_rich_text,
+    render_autonomy_checkbox_setting_speedbump_footer, render_citation_chips,
+    todos::render_completed_todo_items,
 };
+use crate::ai::blocklist::inline_action::run_agents_card_view::RunAgentsCardView;
 use warpui::{
+    Action, AppContext, Element, ModelHandle, SingletonEntity, View, ViewHandle,
     elements::{
         Align, Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment,
         Empty, Expanded, Fill, Flex, FormattedTextElement, Hoverable, MainAxisAlignment,
@@ -140,7 +141,6 @@ use warpui::{
         components::{Coords, UiComponent, UiComponentStyles},
         radio_buttons::{RadioButtonItem, RadioButtonLayout},
     },
-    Action, AppContext, Element, ModelHandle, SingletonEntity, View, ViewHandle,
 };
 
 const BLOCKED_ACTION_MESSAGE_FOR_UPLOADING_ARTIFACT: &str = "Grant access to upload this artifact?";
@@ -148,11 +148,11 @@ const BLOCKED_ACTION_MESSAGE_FOR_UPLOADING_ARTIFACT: &str = "Grant access to upl
 /// Data required to render the AI block output component.
 #[derive(Copy, Clone)]
 pub(crate) struct Props<'a> {
-    pub(super) model: &'a dyn AIBlockModel<View = AIBlock>,
+    pub(crate) model: &'a dyn AIBlockModel<View = AIBlock>,
     pub(super) state_handles: &'a AIBlockStateHandles,
     pub(super) action_buttons: &'a HashMap<AIAgentActionId, ActionButtons>,
     pub(super) view_screenshot_buttons: &'a HashMap<AIAgentActionId, ui_components::button::Button>,
-    pub(super) action_model: &'a ModelHandle<BlocklistAIActionModel>,
+    pub(crate) action_model: &'a ModelHandle<BlocklistAIActionModel>,
     pub(super) editor_views: &'a [EmbeddedCodeEditorView],
     pub(super) current_working_directory: Option<&'a String>,
     pub(super) shell_launch_data: Option<&'a ShellLaunchData>,
@@ -193,18 +193,12 @@ pub(crate) struct Props<'a> {
     pub(super) aws_bedrock_credentials_error_view:
         Option<&'a ViewHandle<AwsBedrockCredentialsErrorView>>,
     pub(super) imported_comments: &'a HashMap<AIAgentActionId, ImportedCommentGroup>,
-    pub(super) run_agents_edit_states:
-        &'a HashMap<AIAgentActionId, super::super::RunAgentsEditState>,
-    pub(super) run_agents_card_handles:
-        &'a HashMap<AIAgentActionId, super::super::RunAgentsCardHandles>,
-    /// Per-action snapshot of an in-flight orchestrate dispatch. Used by
-    /// `render_run_agents` to (a) bypass Round 7's hide-while-streaming
-    /// gate so the spawning card still renders if streaming re-enters
-    /// during the dispatch window, and (b) source the
-    /// "Spawning N agents…" in-flight card. See
-    /// `block.rs::RunAgentsSpawningSnapshot` for full semantics.
-    pub(super) run_agents_spawning:
-        &'a HashMap<AIAgentActionId, super::super::RunAgentsSpawningSnapshot>,
+    /// Per-orchestrate-action card view. Each `RunAgentsCardView` owns
+    /// its own edit state, button + picker handles, and in-flight
+    /// spawning snapshot; AIBlock just lazily creates the view per
+    /// `AIAgentActionId` and embeds it via `ChildView` when the action
+    /// is rendered. Multi-card lifecycle = AIBlock lifecycle.
+    pub(crate) run_agents_card_views: &'a HashMap<AIAgentActionId, ViewHandle<RunAgentsCardView>>,
     #[cfg(feature = "local_fs")]
     pub(crate) resolved_code_block_paths:
         &'a HashMap<std::path::PathBuf, Option<std::path::PathBuf>>,
@@ -758,32 +752,22 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                             ));
                         }
                         AIAgentOutputMessageType::Action(AIAgentAction {
-                            action: AIAgentActionType::RunAgents(req),
+                            action: AIAgentActionType::RunAgents(_req),
                             id,
                             ..
                         }) if FeatureFlag::RunAgentsTool.is_enabled() => {
-                            // Stage 1 orchestrate confirmation card. Renders
-                            // directly from `Message.ToolCall.Orchestrate`
-                            // (no parallel ClientAction).
-                            //
-                            // Round 7: hide the card entirely while the AI
-                            // block is still streaming, mirroring the
-                            // apply-diff (`RequestFileEdits`) gate above.
-                            // The streaming status row shows a per-tool
-                            // "Spawning agents..." message instead.
-                            //
-                            // Exception: if the action has an entry in
-                            // `run_agents_spawning`, the user has already
-                            // accepted and we are mid-dispatch — in that
-                            // case keep rendering so the in-flight
-                            // "Spawning N agents…" card stays visible
-                            // even if the AI block re-enters streaming.
+                            // Embed the per-action `RunAgentsCardView`
+                            // via `ChildView`. The view itself handles
+                            // the streaming gate and in-flight dispatch
+                            // states (a card is mid-dispatch when its
+                            // `is_spawning()` getter returns true).
                             should_render_footer = false;
                             should_render_suggestions = false;
-                            if !status.is_streaming() || props.run_agents_spawning.contains_key(id)
-                            {
-                                output_items
-                                    .add_child(run_agents::render_run_agents(props, id, req, app));
+                            if let Some(card_view) = props.run_agents_card_views.get(id) {
+                                let is_spawning = card_view.as_ref(app).is_spawning();
+                                if !status.is_streaming() || is_spawning {
+                                    output_items.add_child(ChildView::new(card_view).finish());
+                                }
                             }
                         }
                         AIAgentOutputMessageType::Action(AIAgentAction {

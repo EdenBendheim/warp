@@ -12,7 +12,7 @@ use ai::agent::action_result::{
 use ai::skills::SkillReference;
 use std::path::PathBuf;
 
-use crate::ai::blocklist::block::RunAgentsEditState;
+use super::RunAgentsEditState;
 
 fn make_request(harness: &str, mode: RunAgentsExecutionMode) -> RunAgentsRequest {
     make_request_with_skills(harness, mode, Vec::new())
@@ -212,7 +212,7 @@ fn to_request_round_trips_request_fields() {
 }
 
 mod format_terminal_state_tests {
-    use super::super::{format_terminal_state, StatusKind};
+    use super::super::{StatusKind, format_terminal_state};
     use super::*;
 
     fn launched(name: &str, agent_id: &str) -> RunAgentsAgentOutcome {
