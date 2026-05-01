@@ -26,8 +26,8 @@ use pathfinder_color::ColorU;
 use std::rc::Rc;
 use warpui::elements::{
     Border, ChildView, ConstrainedBox, Container, CornerRadius, CrossAxisAlignment, Empty,
-    Expanded, Fill, Flex, Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle,
-    ParentElement, Radius, Text,
+    Expanded, Flex, Hoverable, MainAxisAlignment, MainAxisSize, MouseStateHandle, ParentElement,
+    Radius, Text,
 };
 use warpui::platform::Cursor;
 use warpui::{AppContext, Element, SingletonEntity};
@@ -79,7 +79,7 @@ pub(super) fn render_run_agents(
 
     if let Some(AIActionStatus::Finished(result)) = &status {
         if let AIAgentActionResultType::RunAgents(orchestrate_result) = &result.result {
-            return render_terminal_state(req, orchestrate_result, appearance, app);
+            return render_terminal_state(orchestrate_result, appearance, app);
         }
         log::error!(
             "Unexpected action result type for orchestrate: {:?}",
@@ -284,11 +284,19 @@ fn render_agents_section(state: &RunAgentsEditState, app: &AppContext) -> Box<dy
 }
 
 fn render_terminal_state(
-    req: &RunAgentsRequest,
     result: &RunAgentsResult,
     appearance: &Appearance,
     app: &AppContext,
 ) -> Box<dyn Element> {
+    let (label, kind) = format_terminal_state(result);
+    render_status_only_card(label, appearance, kind, app)
+}
+
+/// Maps a terminal `RunAgentsResult` to the user-visible label + the
+/// status icon kind shown by `render_status_only_card`. Pure-function
+/// extraction so the label-format / pluralization rules can be unit
+/// tested without spinning up a view context.
+fn format_terminal_state(result: &RunAgentsResult) -> (String, StatusKind) {
     match result {
         RunAgentsResult::Launched { agents, .. } => {
             let total = agents.len();
@@ -307,16 +315,12 @@ fn render_terminal_state(
             } else {
                 format!("Spawned {launched} of {total} agents")
             };
-            render_status_only_card(
-                label,
-                appearance,
-                if launched == total {
-                    StatusKind::Success
-                } else {
-                    StatusKind::Mixed
-                },
-                app,
-            )
+            let kind = if launched == total {
+                StatusKind::Success
+            } else {
+                StatusKind::Mixed
+            };
+            (label, kind)
         }
         RunAgentsResult::Denied { reason } => {
             let body = if reason.is_empty() {
@@ -327,23 +331,17 @@ fn render_terminal_state(
                     "Orchestration is currently disabled. Re-enable on the plan card to launch. ({reason})"
                 )
             };
-            render_status_only_card(body, appearance, StatusKind::Cancelled, app)
+            (body, StatusKind::Cancelled)
         }
         RunAgentsResult::Failure { error } => {
-            let _ = req;
             let label = if error.is_empty() {
                 "Failed to start orchestration".to_string()
             } else {
                 format!("Failed to start orchestration: {error}")
             };
-            render_status_only_card(label, appearance, StatusKind::Failure, app)
+            (label, StatusKind::Failure)
         }
-        RunAgentsResult::Cancelled => render_status_only_card(
-            "Spawn agents cancelled".to_string(),
-            appearance,
-            StatusKind::Cancelled,
-            app,
-        ),
+        RunAgentsResult::Cancelled => ("Spawn agents cancelled".to_string(), StatusKind::Cancelled),
     }
 }
 
@@ -654,14 +652,14 @@ fn render_mode_toggle(
     );
 
     // Single segmented-control container. Figma 4340:117057 specifies a
-    // ~5% foreground overlay background (`fg_overlay_1`) with 4px inner
-    // padding around two equal-width segments.
+    // ~10% foreground overlay background with 4px inner padding around
+    // two equal-width segments.
     //
     // P5.5: the segmented control is exactly 205px wide per Figma. The
     // two segments split that width evenly via Expanded so each is
     // ~98px (after 4px padding on each side of the outer container).
     // Order: Cloud first, then Local (per Figma 4340:117134).
-    let segment_outer_bg: Fill = Fill::Solid(ColorU::new(0xfa, 0xf9, 0xf6, 0x1a)); // rgba(250,249,246,0.10)
+    let segment_outer_bg = warp_core::ui::theme::color::internal_colors::fg_overlay_2(theme);
     let segments_row = Flex::row()
         .with_cross_axis_alignment(CrossAxisAlignment::Stretch)
         .with_main_axis_alignment(MainAxisAlignment::Start)
@@ -712,7 +710,7 @@ fn render_segment_button(
     // transparent with muted text, blending into the outer container.
     let active_text_color = blended_colors::text_main(theme, theme.surface_1());
     let inactive_text_color = blended_colors::text_disabled(theme, theme.surface_1());
-    let segment_active_bg: Fill = Fill::Solid(ColorU::new(0xfa, 0xf9, 0xf6, 0x33)); // rgba(250,249,246,0.20)
+    let segment_active_bg = warp_core::ui::theme::color::internal_colors::fg_overlay_4(theme);
     Hoverable::new(mouse_state, move |_| {
         let text = Text::new(label_owned.clone(), font_family, font_size)
             .with_color(if is_active {

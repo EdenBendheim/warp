@@ -187,6 +187,7 @@ use ai::agent::action::{RunAgentsAgentRunConfig, RunAgentsExecutionMode, RunAgen
 use ai::agent::action_result::{
     RunAgentsAgentOutcome, RunAgentsAgentOutcomeKind, RunAgentsLaunchedExecutionMode,
 };
+use ai::skills::SkillReference;
 use warp_cli::agent::Harness;
 
 use crate::ai::blocklist::StartAgentOutcome;
@@ -422,6 +423,11 @@ pub(super) struct RunAgentsEditState {
     pub(super) base_prompt: String,
     /// Summary text rendered in the title row.
     pub(super) summary: String,
+    /// Run-wide skills (passed through verbatim per PRODUCT.md
+    /// "Skills and base prompt are passed through verbatim and not
+    /// displayed"). Propagated to each child's
+    /// `StartAgentExecutionMode::Remote.skill_references` at dispatch.
+    pub(super) skills: Vec<SkillReference>,
 }
 
 impl RunAgentsEditState {
@@ -434,6 +440,7 @@ impl RunAgentsEditState {
             agent_run_configs: req.agent_run_configs.clone(),
             base_prompt: req.base_prompt.clone(),
             summary: req.summary.clone(),
+            skills: req.skills.clone(),
         }
     }
 
@@ -485,7 +492,7 @@ impl RunAgentsEditState {
                     "OpenCode is not supported on Cloud yet. Switch to Local or pick a different harness.",
                 )
             }
-            _ => None,
+            RunAgentsExecutionMode::Local | RunAgentsExecutionMode::Remote { .. } => None,
         }
     }
 
@@ -493,7 +500,7 @@ impl RunAgentsEditState {
         RunAgentsRequest {
             summary: self.summary.clone(),
             base_prompt: self.base_prompt.clone(),
-            skills: Vec::new(),
+            skills: self.skills.clone(),
             model_id: self.model_id.clone(),
             harness_type: self.harness_type.clone(),
             execution_mode: self.execution_mode.clone(),
@@ -6018,13 +6025,6 @@ pub enum AIBlockAction {
         action_id: AIAgentActionId,
         environment_id: String,
     },
-    /// User clicked the Accept split-button's chevron-down dropdown
-    /// affordance. Currently a no-op; the dropdown content is a
-    /// fast-follow per the Stage 1 visual rework spec.
-    RunAgentsAcceptMenuToggled {
-        action_id: AIAgentActionId,
-    },
-
     /// Keybinding-friendly variant: accept the most-recent pending
     /// orchestrate card. Resolved at dispatch time via
     /// [`AIBlock::current_run_agents_action_id`]; no-op when there
@@ -6758,12 +6758,6 @@ impl TypedActionView for AIBlock {
             AIBlockAction::RunAgentsAccept { action_id } => {
                 self.handle_run_agents_accept(action_id, ctx);
             }
-            AIBlockAction::RunAgentsAcceptMenuToggled { action_id: _ } => {
-                // TODO(QUALITY-569 fast-follow): wire the Accept split
-                // button's chevron-down dropdown content. The visual
-                // structure already matches the Figma; the menu items
-                // (e.g. "Accept and \u2026") have not been speced yet.
-            }
             AIBlockAction::RunAgentsAcceptCurrentCard => {
                 if let Some(action_id) = self.current_run_agents_action_id(ctx) {
                     self.handle_run_agents_accept(&action_id, ctx);
@@ -6895,6 +6889,10 @@ impl AIBlock {
             Arc::new(NakedTheme),
             ctx,
         );
+        // The chevron-down split-button affordance is visual-only per
+        // the Figma; both the primary click and the chevron click route
+        // to `RunAgentsAccept`. A bespoke dropdown menu (e.g. "Accept
+        // and …" variants) was not speced for Stage 1.
         let accept_button = CompactibleSplitActionButton::new(
             "Accept".to_string(),
             Some(KeystrokeSource::Fixed(accept_keystroke)),
@@ -6902,7 +6900,7 @@ impl AIBlock {
             AIBlockAction::RunAgentsAccept {
                 action_id: action_id.clone(),
             },
-            AIBlockAction::RunAgentsAcceptMenuToggled {
+            AIBlockAction::RunAgentsAccept {
                 action_id: action_id.clone(),
             },
             Icon::Check,
@@ -7340,9 +7338,9 @@ impl AIBlock {
 
         // Visual-only Host picker. Currently the worker host is fixed at
         // "warp"; the picker is constructed as a real `Dropdown` so the
-        // four-column editor layout matches Figma 4340:117057. Selecting
-        // the lone item is a no-op (`RunAgentsAcceptMenuToggled` is the
-        // only available no-op action wired through `AIBlock`).
+        // four-column editor layout matches Figma 4340:117057. The lone
+        // "Warp" item has no `on_select_action`, so clicking it just
+        // closes the menu without dispatching anything.
         let needs_host = existing.is_none_or(|h| h.host_picker.is_none());
         let host_picker = if needs_host {
             let action_id_for_picker = action_id.clone();
@@ -7367,14 +7365,9 @@ impl AIBlock {
                 dropdown.set_font_color(picker_font_color, ctx_dropdown);
                 dropdown
             });
+            let _ = action_id_for_picker;
             dropdown_handle.update(ctx, |dropdown, ctx_dropdown| {
-                let item = MenuItemFields::new("Warp".to_string()).with_on_select_action(
-                    DropdownAction::SelectActionAndClose(
-                        AIBlockAction::RunAgentsAcceptMenuToggled {
-                            action_id: action_id_for_picker.clone(),
-                        },
-                    ),
-                );
+                let item = MenuItemFields::new("Warp".to_string());
                 dropdown.set_rich_items(vec![MenuItem::Item(item)], ctx_dropdown);
                 dropdown.set_selected_by_index(0, ctx_dropdown);
             });
@@ -7569,6 +7562,7 @@ impl AIBlock {
         let run_execution_mode = request.execution_mode.clone();
         let agent_run_configs = request.agent_run_configs.clone();
         let base_prompt = request.base_prompt.clone();
+        let run_skills = request.skills.clone();
 
         let executor_handle = self.action_model.as_ref(ctx).start_agent_executor(ctx);
 
@@ -7603,6 +7597,7 @@ impl AIBlock {
                 &run_execution_mode,
                 &run_harness_type,
                 &run_model_id,
+                &run_skills,
                 cfg,
             );
             let mode = match mode {
@@ -7747,6 +7742,7 @@ fn run_agents_to_start_agent_mode(
     run_execution_mode: &RunAgentsExecutionMode,
     run_harness_type: &str,
     run_model_id: &str,
+    run_skills: &[SkillReference],
     cfg: &RunAgentsAgentRunConfig,
 ) -> Result<crate::ai::agent::StartAgentExecutionMode, String> {
     use crate::ai::agent::StartAgentExecutionMode as M;
@@ -7788,7 +7784,7 @@ fn run_agents_to_start_agent_mode(
             }
             Ok(M::Remote {
                 environment_id: environment_id.clone(),
-                skill_references: Vec::new(),
+                skill_references: run_skills.to_vec(),
                 model_id: run_model_id.to_string(),
                 computer_use_enabled: *computer_use_enabled,
                 worker_host: worker_host.clone(),
