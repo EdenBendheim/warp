@@ -107,16 +107,6 @@ impl CompactibleSplitActionButton {
     ) {
         self.primary_button.set_keybinding(keybinding, ctx);
     }
-
-    /// Forwards a `disabled` toggle to both the primary action button
-    /// pair and the trailing chevron menu button so callers can disable
-    /// the whole split control with a single call.
-    pub fn set_disabled<T: View>(&mut self, disabled: bool, ctx: &mut ViewContext<T>) {
-        self.primary_button.set_disabled(disabled, ctx);
-        self.menu_button.update(ctx, |button, ctx| {
-            button.set_disabled(disabled, ctx);
-        });
-    }
 }
 
 impl RenderCompactibleActionButton for CompactibleSplitActionButton {

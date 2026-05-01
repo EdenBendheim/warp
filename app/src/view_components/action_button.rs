@@ -174,16 +174,6 @@ pub enum ButtonSize {
     Small,
     XSmall,
     InlineActionHeader,
-    /// Round 6 follow-up: dedicated size for the orchestrate confirmation
-    /// card's Reject / Edit / Accept buttons. Identical to
-    /// [`ButtonSize::InlineActionHeader`] except the label text is
-    /// `monospace_font_size() - 1.` (= 12px at the default 13px monospace)
-    /// instead of `- 2.` (= 11px), per the Figma 12px Semibold spec for
-    /// these buttons. Card-local: callers other than
-    /// `ensure_orchestrate_card_buttons` must keep using
-    /// [`ButtonSize::InlineActionHeader`] so other inline-action header
-    /// buttons across the app remain unaffected.
-    OrchestrateActionButton,
     InputPrompt,
     /// Sizing for buttons at the bottom of the UDI.
     UDIButton,
@@ -1318,7 +1308,6 @@ impl ButtonSize {
             ButtonSize::Small => 14.,
             ButtonSize::XSmall => 14.,
             ButtonSize::InlineActionHeader => appearance.monospace_font_size(),
-            ButtonSize::OrchestrateActionButton => appearance.monospace_font_size(),
             ButtonSize::InputPrompt => appearance.monospace_font_size(),
             ButtonSize::UDIButton => appearance.monospace_font_size() - 1.0,
             ButtonSize::UDIPromptChip => appearance.monospace_font_size() - 1.0,
@@ -1335,7 +1324,6 @@ impl ButtonSize {
             ButtonSize::Small => 12.,
             ButtonSize::XSmall => 12.,
             ButtonSize::InlineActionHeader => appearance.monospace_font_size() - 2.,
-            ButtonSize::OrchestrateActionButton => appearance.monospace_font_size() - 1.,
             ButtonSize::InputPrompt => appearance.monospace_font_size(),
             ButtonSize::UDIButton => appearance.monospace_font_size() - 1.0,
             ButtonSize::UDIPromptChip => appearance.monospace_font_size() - 1.0,
@@ -1349,7 +1337,6 @@ impl ButtonSize {
             ButtonSize::Small => Properties::default().weight(Weight::Semibold),
             ButtonSize::XSmall => Properties::default().weight(Weight::Normal),
             ButtonSize::InlineActionHeader => Properties::default().weight(Weight::Semibold),
-            ButtonSize::OrchestrateActionButton => Properties::default().weight(Weight::Semibold),
             ButtonSize::InputPrompt => Properties::default(),
             ButtonSize::UDIButton => Properties::default(),
             ButtonSize::UDIPromptChip => Properties::default().weight(Weight::Semibold),
@@ -1364,7 +1351,6 @@ impl ButtonSize {
             ButtonSize::Small => 4.,
             ButtonSize::XSmall => 4.,
             ButtonSize::InlineActionHeader => 6.,
-            ButtonSize::OrchestrateActionButton => 6.,
             ButtonSize::InputPrompt => 5.,
             ButtonSize::UDIButton => 5.,
             ButtonSize::UDIPromptChip => 4.,
@@ -1417,18 +1403,6 @@ impl ButtonSize {
                 padding: Some(Coords::default()),
                 ..Default::default()
             },
-            // Round 6 follow-up: keystroke chip sizing scaled to the
-            // larger 12px label so the chip glyph stays roughly
-            // proportional. font_size = monospace_font_size() - 3 (= 10px)
-            // and chip box matches the 12px label height.
-            ButtonSize::OrchestrateActionButton => UiComponentStyles {
-                font_size: Some(appearance.monospace_font_size() - 3.),
-                height: Some(appearance.monospace_font_size() - 1.),
-                width: Some(appearance.monospace_font_size() - 1.),
-                margin: Some(Coords::default()),
-                padding: Some(Coords::default()),
-                ..Default::default()
-            },
             ButtonSize::InputPrompt => UiComponentStyles {
                 font_size: Some(appearance.monospace_font_size() - 4.),
                 width: Some(appearance.monospace_font_size() * DEFAULT_UI_LINE_HEIGHT_RATIO),
@@ -1471,10 +1445,6 @@ impl ButtonSize {
             ButtonSize::XSmall => 20.,
             // Should be 24px high at a 14px font size, and scale accordingly.
             ButtonSize::InlineActionHeader => 10. + appearance.monospace_font_size(),
-            // Match `InlineActionHeader`'s outer height so the orchestrate
-            // buttons sit at the same vertical rhythm as other inline-action
-            // header buttons; only the label/keystroke chip sizing differs.
-            ButtonSize::OrchestrateActionButton => 10. + appearance.monospace_font_size(),
             // Should be 20px high at a 14px font size, and scale accordingly.
             ButtonSize::InputPrompt => 6. + appearance.monospace_font_size(),
             ButtonSize::UDIButton => 6. + appearance.monospace_font_size(),
@@ -1503,7 +1473,6 @@ impl ButtonSize {
             ButtonSize::Small => None,
             ButtonSize::XSmall => None,
             ButtonSize::InlineActionHeader => None,
-            ButtonSize::OrchestrateActionButton => None,
             ButtonSize::InputPrompt => Some(-2.),
             ButtonSize::UDIButton => None,
             ButtonSize::UDIPromptChip => None,
@@ -1518,7 +1487,6 @@ impl ButtonSize {
             ButtonSize::Small => 8.,
             ButtonSize::XSmall => 6.,
             ButtonSize::InlineActionHeader => 8.,
-            ButtonSize::OrchestrateActionButton => 8.,
             ButtonSize::InputPrompt => 4.,
             ButtonSize::UDIButton => 4.,
             ButtonSize::UDIPromptChip | ButtonSize::AgentInputButton => {
@@ -1534,7 +1502,6 @@ impl ButtonSize {
             ButtonSize::Small => -4.,
             ButtonSize::XSmall => -4.,
             ButtonSize::InlineActionHeader => -4.,
-            ButtonSize::OrchestrateActionButton => -4.,
             // Account for the negative margin on prompt buttons.
             ButtonSize::InputPrompt => -8.,
             ButtonSize::UDIButton => -8.,
@@ -1549,7 +1516,6 @@ impl ButtonSize {
             ButtonSize::Small => Padding::uniform(2.),
             ButtonSize::XSmall => Padding::uniform(2.),
             ButtonSize::InlineActionHeader => Padding::uniform(2.),
-            ButtonSize::OrchestrateActionButton => Padding::uniform(2.),
             ButtonSize::InputPrompt => Padding::default().with_vertical(1.).with_horizontal(2.),
             ButtonSize::UDIButton => Padding::default().with_vertical(1.).with_horizontal(2.),
             ButtonSize::UDIPromptChip | ButtonSize::AgentInputButton => {

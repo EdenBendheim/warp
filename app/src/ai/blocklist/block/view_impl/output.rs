@@ -756,16 +756,20 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                         }) if FeatureFlag::OrchestrateTool.is_enabled() => {
                             // Stage 1 orchestrate confirmation card. Renders
                             // directly from `Message.ToolCall.Orchestrate`
-                            // (no parallel ClientAction). The full Figma
-                            // layout (model / harness / env / host pickers,
-                            // Reject/Edit/Accept buttons) is structural-stub
-                            // today — see view_impl::orchestrate file-level
-                            // TODO. Five terminal states + streaming
-                            // placeholder are wired.
+                            // (no parallel ClientAction).
+                            //
+                            // Round 7: hide the card entirely while the AI
+                            // block is still streaming, mirroring the
+                            // apply-diff (`RequestFileEdits`) gate above.
+                            // The streaming status row shows a per-tool
+                            // "Spawning agents..." message instead.
                             should_render_footer = false;
                             should_render_suggestions = false;
-                            output_items
-                                .add_child(orchestrate::render_orchestrate(props, id, req, app));
+                            if !status.is_streaming() {
+                                output_items.add_child(orchestrate::render_orchestrate(
+                                    props, id, req, app,
+                                ));
+                            }
                         }
                         AIAgentOutputMessageType::Action(AIAgentAction {
                             action:

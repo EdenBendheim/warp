@@ -133,6 +133,7 @@ pub const LOAD_OUTPUT_MESSAGE: &str = "Warping...";
 pub const LOAD_OUTPUT_MESSAGE_FOR_ADJUSTING: &str = "Adjusting tasks...";
 pub const LOAD_OUTPUT_MESSAGE_FOR_PASSIVE_CODE_GEN: &str = "Generating fix...";
 pub const LOAD_OUTPUT_MESSAGE_FOR_CREATING_DIFF: &str = "Creating diff...";
+pub const LOAD_OUTPUT_MESSAGE_FOR_ORCHESTRATING: &str = "Spawning agents...";
 pub const LOAD_OUTPUT_MESSAGE_FOR_PREPARING_QUESTION: &str = "Preparing question...";
 pub const LOAD_OUTPUT_MESSAGE_FOR_GENERATING_PLAN: &str = "Generating plan...";
 pub const LOAD_OUTPUT_MESSAGE_FOR_UPDATING_PLAN: &str = "Updating plan...";
@@ -245,6 +246,23 @@ pub fn render_warping_indicator<V: View>(
         })
     });
 
+    // Round 7 #1: while an `orchestrate` tool call is mid-stream, the
+    // confirmation card is hidden (see `view_impl::output` gate).
+    // Surface a per-tool "Spawning agents..." message in the streaming
+    // status row instead of the generic "Warping...".
+    let is_last_message_orchestrating = output_to_render.as_ref().is_some_and(|output| {
+        let output = output.get();
+        output.messages.last().is_some_and(|m| {
+            matches!(
+                m.message,
+                AIAgentOutputMessageType::Action(AIAgentAction {
+                    action: AIAgentActionType::Orchestrate(_),
+                    ..
+                })
+            )
+        })
+    });
+
     let is_last_message_asking_user_question = output_to_render.as_ref().is_some_and(|output| {
         let output = output.get();
         output.messages.last().is_some_and(|m| {
@@ -330,6 +348,8 @@ pub fn render_warping_indicator<V: View>(
         LOAD_OUTPUT_MESSAGE_FOR_PASSIVE_CODE_GEN.to_string()
     } else if is_last_message_requesting_file_edits {
         LOAD_OUTPUT_MESSAGE_FOR_CREATING_DIFF.to_string()
+    } else if is_last_message_orchestrating && FeatureFlag::OrchestrateTool.is_enabled() {
+        LOAD_OUTPUT_MESSAGE_FOR_ORCHESTRATING.to_string()
     } else if is_last_message_asking_user_question {
         LOAD_OUTPUT_MESSAGE_FOR_PREPARING_QUESTION.to_string()
     } else if is_searching_web {
