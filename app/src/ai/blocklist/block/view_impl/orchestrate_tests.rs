@@ -76,7 +76,11 @@ fn local_to_cloud_resets_opencode_to_oz() {
 }
 
 #[test]
-fn cloud_without_env_disables_accept() {
+fn cloud_without_env_no_longer_disables_accept() {
+    // Round 6 follow-up B2: empty environment_id is now a soft
+    // recommendation surfaced inline in the Cloud editor (rendered as
+    // `ui_warning_color` text), not a hard validation error. The Accept
+    // button stays enabled so users can launch with no environment.
     let state = OrchestrateEditState::from_request(&make_request(
         "oz",
         OrchestrateExecutionMode::Remote {
@@ -85,9 +89,10 @@ fn cloud_without_env_disables_accept() {
             computer_use_enabled: false,
         },
     ));
-    let reason = state.accept_disabled_reason();
-    assert!(reason.is_some(), "Cloud without env should disable Accept");
-    assert!(reason.unwrap().contains("environment"));
+    assert!(
+        state.accept_disabled_reason().is_none(),
+        "Cloud without env should NOT disable Accept (soft recommendation only)"
+    );
 }
 
 #[test]

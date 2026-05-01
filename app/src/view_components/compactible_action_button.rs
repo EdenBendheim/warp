@@ -127,6 +127,18 @@ impl CompactibleActionButton {
         });
     }
 
+    /// Forwards a `disabled` toggle to both the compact and expanded
+    /// `ActionButton` view handles, so callers can disable the entire
+    /// compactible pair with a single call.
+    pub fn set_disabled<T: View>(&mut self, disabled: bool, ctx: &mut ViewContext<T>) {
+        self.compact_button.update(ctx, |button, ctx| {
+            button.set_disabled(disabled, ctx);
+        });
+        self.expanded_button.update(ctx, |button, ctx| {
+            button.set_disabled(disabled, ctx);
+        });
+    }
+
     pub fn compact_button(&self) -> &ViewHandle<ActionButton> {
         &self.compact_button
     }

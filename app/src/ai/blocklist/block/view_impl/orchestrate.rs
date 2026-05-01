@@ -20,7 +20,7 @@
 //! Spec references: TECH.md §8, §9; PRODUCT.md "Confirmation card",
 //! "Post-action card states", "Invariants".
 
-use ai::agent::action::OrchestrateRequest;
+use ai::agent::action::{OrchestrateExecutionMode, OrchestrateRequest};
 use ai::agent::action_result::{OrchestrateAgentOutcomeKind, OrchestrateResult};
 use pathfinder_color::ColorU;
 use std::rc::Rc;
@@ -34,6 +34,7 @@ use warpui::{AppContext, Element, SingletonEntity};
 
 use crate::ai::agent::icons;
 use crate::ai::agent::{AIAgentActionId, AIAgentActionResultType};
+use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::blocklist::action_model::AIActionStatus;
 use crate::ai::blocklist::agent_view::orchestration_pill_bar::render_static_agent_pill;
 use crate::ai::blocklist::block::{AIBlockAction, OrchestrateCardHandles, OrchestrateEditState};
@@ -45,6 +46,12 @@ use crate::ui_components::blended_colors;
 use crate::view_components::compactible_action_button::{
     RenderCompactibleActionButton, MEDIUM_SIZE_SWITCH_THRESHOLD,
 };
+
+/// Round 6 follow-up B3: canonical worker-host value (lowercase) used
+/// throughout the orchestrate edit state. The recommendation copy in
+/// `render_editor` is gated on this so non-Warp hosts — where the
+/// environment concept doesn't apply — don't surface the recommendation.
+const ORCHESTRATE_WARP_WORKER_HOST: &str = "warp";
 
 use super::output::Props;
 use super::WithContentItemSpacing;
@@ -135,7 +142,7 @@ fn render_confirmation_card(
         .with_child(body);
 
     if state.is_editor_open {
-        content.add_child(render_editor(action_id, state, handles, appearance));
+        content.add_child(render_editor(action_id, state, handles, app));
     }
 
     let border_color = if is_blocked {
@@ -231,7 +238,9 @@ fn render_summary_with_edit_chip(
 
     // P5.8: 12px between summary text and the "Agents (N)" label
     // below it (was 8px), matching the Figma 4340:117104 column gap.
-    Container::new(summary_text).with_margin_bottom(12.).finish()
+    Container::new(summary_text)
+        .with_margin_bottom(12.)
+        .finish()
 }
 
 fn render_agents_section(state: &OrchestrateEditState, app: &AppContext) -> Box<dyn Element> {
@@ -377,7 +386,7 @@ fn render_editor(
     action_id: &AIAgentActionId,
     state: &OrchestrateEditState,
     handles: &OrchestrateCardHandles,
-    appearance: &Appearance,
+    app: &AppContext,
 ) -> Box<dyn Element> {
     // Per Figma 4340:117057 the editor is a Local/Cloud segmented control
     // followed by a single horizontal row of four equally-distributed
@@ -389,6 +398,7 @@ fn render_editor(
     // the body above by a 1px top divider element (inset 16px on the
     // left and 12px on the right per the Figma mock) and uses the
     // default block background.
+    let appearance = Appearance::as_ref(app);
     let theme = appearance.theme();
     let mut column = Flex::column().with_cross_axis_alignment(CrossAxisAlignment::Stretch);
 
@@ -413,12 +423,26 @@ fn render_editor(
     );
     column.add_child(render_picker_row_quad(state, handles, appearance));
 
-    // P4.6: validation error sits below the picker row, inside the
-    // editor area, so it appears adjacent to the offending field
-    // (e.g. "Select an environment to launch on Cloud." right below
-    // the Environment dropdown).
+    // P4.6: hard validation error sits below the picker row, inside the
+    // editor area, so it appears adjacent to the offending field. Round
+    // 6 follow-up: only OpenCode+Cloud remains a hard error here
+    // (rendered in `ui_error_color`); empty-env is handled below as a
+    // soft recommendation.
     if let Some(reason) = state.accept_disabled_reason() {
-        column.add_child(render_validation_error(reason, appearance));
+        column.add_child(render_validation_error(
+            reason,
+            theme.ui_error_color(),
+            appearance,
+        ));
+    } else if let Some(message) = empty_env_recommendation_message(state, app) {
+        // Round 6 follow-up B2/B3: soft warning when Cloud mode is
+        // selected with no environment_id and the worker host is
+        // "warp". Doesn't block Accept.
+        column.add_child(render_validation_error(
+            message,
+            theme.ui_warning_color(),
+            appearance,
+        ));
     }
 
     // P5.4: add rounded bottom corners that match the outer card's
@@ -684,19 +708,63 @@ fn render_segment_button(
     .finish()
 }
 
-fn render_validation_error(reason: &str, appearance: &Appearance) -> Box<dyn Element> {
-    let theme = appearance.theme();
+/// Round 6 follow-up A: render the validation/recommendation line below
+/// the picker row. Color is now caller-supplied so the same slot can
+/// surface either a hard `ui_error_color` block (OpenCode+Cloud) or a
+/// softer `ui_warning_color` recommendation (Cloud without env on
+/// Warp host). Font dropped from 13px → 12px (`monospace_font_size() - 1.`)
+/// to align with the surrounding field labels and "Agents (N)" label.
+fn render_validation_error(
+    reason: impl Into<String>,
+    color: ColorU,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
     Container::new(
         Text::new(
-            reason.to_string(),
+            reason.into(),
             appearance.ui_font_family(),
-            appearance.monospace_font_size(),
+            appearance.monospace_font_size() - 1.,
         )
-        .with_color(theme.ui_error_color())
+        .with_color(color)
         .finish(),
     )
     .with_margin_bottom(8.)
     .finish()
+}
+
+/// Round 6 follow-up B2/B3: returns the recommendation copy for the
+/// Cloud-mode editor when the user has not selected an environment AND
+/// the worker host is "warp". Returns `None` for Local mode, when an
+/// environment is selected, or when a non-Warp worker host is in use
+/// (environments don't apply outside the Warp host so the warning is
+/// suppressed). Two variants based on whether any environments are
+/// available to choose from.
+fn empty_env_recommendation_message(
+    state: &OrchestrateEditState,
+    app: &AppContext,
+) -> Option<String> {
+    let OrchestrateExecutionMode::Remote {
+        environment_id,
+        worker_host,
+        ..
+    } = &state.execution_mode
+    else {
+        return None;
+    };
+    if !environment_id.trim().is_empty() {
+        return None;
+    }
+    if !worker_host.eq_ignore_ascii_case(ORCHESTRATE_WARP_WORKER_HOST) {
+        return None;
+    }
+    let env_count = AgentConversationsModel::as_ref(app)
+        .get_all_environment_ids_and_names(app)
+        .len();
+    Some(if env_count > 0 {
+        "We recommend selecting an environment for cloud agents.".to_string()
+    } else {
+        "We recommend creating an environment for cloud agents.".to_string()
+    })
 }
 
 #[cfg(test)]

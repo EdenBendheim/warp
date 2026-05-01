@@ -265,6 +265,14 @@ const DISPATCHED_REQUESTED_EDIT_KEYMAP_CONTEXT: &str = "PendingAIRequestedEdits"
 /// elsewhere.
 pub(super) const ORCHESTRATE_EDITOR_OPEN: &str = "OrchestrateEditorOpen";
 
+/// Round 6 follow-up B1: display label for the synthetic "(no
+/// environment)" item at the top of the orchestrate Cloud-mode
+/// environment picker. Selecting this item dispatches
+/// `OrchestrateEnvironmentChanged` with an empty `environment_id`,
+/// which clears any previously chosen environment and reverts the
+/// state to no-env.
+pub(super) const ORCHESTRATE_ENV_NONE_LABEL: &str = "(no environment)";
+
 const AUTO_EXPAND_REQUESTED_COMMAND_DELAY: std::time::Duration =
     std::time::Duration::from_millis(3000);
 
@@ -463,15 +471,13 @@ impl OrchestrateEditState {
     }
 
     /// Returns Some(reason) if Accept must be disabled, None if it's
-    /// enabled. Spec §8: Cloud-without-env and OpenCode+Cloud both block
-    /// Accept and surface inline error text.
+    /// enabled. Round 6 follow-up: Cloud-without-env is no longer a
+    /// hard block — it's now a soft recommendation rendered in
+    /// `render_editor` (see `OrchestrateExecutionMode::Remote`
+    /// + empty-env recommendation copy). The remaining hard block is
+    /// OpenCode+Cloud, which is still unsupported per spec §8.
     pub(super) fn accept_disabled_reason(&self) -> Option<&'static str> {
         match &self.execution_mode {
-            OrchestrateExecutionMode::Remote { environment_id, .. }
-                if environment_id.trim().is_empty() =>
-            {
-                Some("Select an environment to launch on Cloud.")
-            }
             OrchestrateExecutionMode::Remote { .. }
                 if self.harness_type.eq_ignore_ascii_case("opencode") =>
             {
@@ -1904,12 +1910,19 @@ impl AIBlock {
             AIBlockOutputStatus::PartiallyReceived { output } => {
                 let output = output.get();
                 self.handle_updated_output(&output, ctx);
+                // Round 6 #1: keep orchestrate buttons disabled while
+                // partial chunks are still streaming in.
+                self.sync_orchestrate_card_buttons_streaming_state(ctx);
             }
             AIBlockOutputStatus::Complete { output } => {
                 let output = output.get();
                 let server_output_id = self.model.server_output_id(ctx);
                 self.handle_updated_output(&output, ctx);
                 self.handle_complete_output(&output, ctx);
+                // Round 6 #1: streaming is complete — re-enable any
+                // orchestrate confirmation card buttons that were
+                // disabled during streaming.
+                self.sync_orchestrate_card_buttons_streaming_state(ctx);
                 send_telemetry_from_ctx!(
                     TelemetryEvent::AgentModeCreatedAIBlock {
                         client_exchange_id,
@@ -6108,7 +6121,21 @@ impl TypedActionView for AIBlock {
                 // tool call, delegate to the orchestrate accept handler
                 // so Enter triggers the same path as clicking Accept on
                 // the confirmation card.
+                //
+                // Round 6 #1: while the AI block is still streaming,
+                // suppress the orchestrate delegation so Enter is a
+                // no-op (consistent with the disabled Accept button
+                // and the gated `OrchestrateAcceptCurrentCard` binding).
+                // The non-orchestrate `execute_next_action_for_user`
+                // path still runs for other action types since they
+                // arrive after streaming completes.
                 if let Some(orchestrate_id) = self.current_orchestrate_action_id(ctx) {
+                    if self.is_streaming(ctx) {
+                        log::info!(
+                            "[orchestrate-debug] ExecuteNextPendingAction suppressed for orchestrate (action_id={orchestrate_id:?}): still streaming"
+                        );
+                        return;
+                    }
                     log::info!(
                         "[orchestrate-debug] ExecuteNextPendingAction -> orchestrate accept (action_id={orchestrate_id:?})"
                     );
@@ -6668,9 +6695,19 @@ impl TypedActionView for AIBlock {
                 });
             }
             AIBlockAction::OrchestrateReject { action_id } => {
+                // Round 6 #1: ignore Reject while the tool call is
+                // still streaming in. The button is also rendered
+                // disabled, but this is the safety net for stray
+                // dispatches from non-button code paths.
+                if self.is_streaming(ctx) {
+                    return;
+                }
                 self.cancel_action(action_id, ctx);
             }
             AIBlockAction::OrchestrateToggleEdit { action_id } => {
+                if self.is_streaming(ctx) {
+                    return;
+                }
                 self.handle_orchestrate_toggle_edit(action_id, ctx);
             }
             AIBlockAction::OrchestrateExecutionModeToggled {
@@ -6721,6 +6758,9 @@ impl TypedActionView for AIBlock {
                 // See note on OrchestrateModelChanged above.
             }
             AIBlockAction::OrchestrateAccept { action_id } => {
+                if self.is_streaming(ctx) {
+                    return;
+                }
                 self.handle_orchestrate_accept(action_id, ctx);
             }
             AIBlockAction::OrchestrateAcceptMenuToggled { action_id: _ } => {
@@ -6730,6 +6770,12 @@ impl TypedActionView for AIBlock {
                 // (e.g. "Accept and \u2026") have not been speced yet.
             }
             AIBlockAction::OrchestrateAcceptCurrentCard => {
+                if self.is_streaming(ctx) {
+                    log::info!(
+                        "[orchestrate-debug] OrchestrateAcceptCurrentCard suppressed: still streaming"
+                    );
+                    return;
+                }
                 let resolved = self.current_orchestrate_action_id(ctx);
                 log::info!(
                     "[orchestrate-debug] OrchestrateAcceptCurrentCard fired: resolved action_id={resolved:?}"
@@ -6746,6 +6792,12 @@ impl TypedActionView for AIBlock {
                 // variants and in case future code paths dispatch it
                 // programmatically. Diagnostic log retained from
                 // P4.11 for parity with other handlers.
+                if self.is_streaming(ctx) {
+                    log::info!(
+                        "[orchestrate-debug] OrchestrateRejectCurrentCard suppressed: still streaming"
+                    );
+                    return;
+                }
                 let resolved = self.current_orchestrate_action_id(ctx);
                 log::info!(
                     "[orchestrate-debug] OrchestrateRejectCurrentCard fired: resolved action_id={resolved:?}"
@@ -6755,6 +6807,12 @@ impl TypedActionView for AIBlock {
                 }
             }
             AIBlockAction::OrchestrateToggleEditCurrentCard => {
+                if self.is_streaming(ctx) {
+                    log::info!(
+                        "[orchestrate-debug] OrchestrateToggleEditCurrentCard suppressed: still streaming"
+                    );
+                    return;
+                }
                 let resolved = self.current_orchestrate_action_id(ctx);
                 log::info!(
                     "[orchestrate-debug] OrchestrateToggleEditCurrentCard fired: resolved action_id={resolved:?}"
@@ -6819,6 +6877,50 @@ impl AIBlock {
             .any(|state| state.is_editor_open)
     }
 
+    /// Round 6 #1: returns `true` while this AIBlock's output is still
+    /// streaming. Used to gate the orchestrate confirmation card's
+    /// Reject / Edit / Accept buttons (and their keyboard shortcuts) so
+    /// they only become interactive after the full tool-call payload has
+    /// been streamed in. Pre-completion clicks/keypresses are no-ops.
+    pub(super) fn is_streaming(&self, app: &AppContext) -> bool {
+        self.model.status(app).is_streaming()
+    }
+
+    /// Round 6 #1: applies the streaming-disabled state to every
+    /// orchestrate confirmation card's Reject / Edit / Accept buttons
+    /// in this block. Called from `on_output_status_update` so that
+    /// when the AI block transitions Pending → PartiallyReceived →
+    /// Complete, the buttons re-enable in lock-step with the streaming
+    /// completion signal. Idempotent.
+    fn sync_orchestrate_card_buttons_streaming_state(&mut self, ctx: &mut ViewContext<Self>) {
+        let disabled = self.is_streaming(ctx);
+        let action_ids: Vec<AIAgentActionId> =
+            self.orchestrate_card_handles.keys().cloned().collect();
+        for action_id in action_ids {
+            let Some(handles) = self.orchestrate_card_handles.get(&action_id).cloned() else {
+                continue;
+            };
+            if let Some(mut reject) = handles.reject_button {
+                reject.set_disabled(disabled, ctx);
+                if let Some(entry) = self.orchestrate_card_handles.get_mut(&action_id) {
+                    entry.reject_button = Some(reject);
+                }
+            }
+            if let Some(mut edit) = handles.edit_button {
+                edit.set_disabled(disabled, ctx);
+                if let Some(entry) = self.orchestrate_card_handles.get_mut(&action_id) {
+                    entry.edit_button = Some(edit);
+                }
+            }
+            if let Some(mut accept) = handles.accept_button {
+                accept.set_disabled(disabled, ctx);
+                if let Some(entry) = self.orchestrate_card_handles.get_mut(&action_id) {
+                    entry.accept_button = Some(accept);
+                }
+            }
+        }
+    }
+
     /// Lazily build the Reject / Edit / Accept button views for an
     /// orchestrate confirmation card. Called when an Orchestrate action
     /// is observed in the streaming output so the card can render the
@@ -6852,10 +6954,15 @@ impl AIBlock {
         let accept_keystroke =
             Keystroke::parse("enter").expect("orchestrate accept keystroke literal must parse");
 
+        // Round 6 follow-up: use the dedicated `OrchestrateActionButton`
+        // size (12px Semibold) instead of `InlineActionHeader` (11px) so
+        // the Reject / Edit / Accept labels match the Figma 12px
+        // Semibold spec for these buttons. Card-local; other inline-action
+        // header buttons across the app keep using `InlineActionHeader`.
         let reject_button = CompactibleActionButton::new(
             "Reject".to_string(),
             Some(KeystrokeSource::Fixed(reject_keystroke)),
-            ButtonSize::InlineActionHeader,
+            ButtonSize::OrchestrateActionButton,
             AIBlockAction::OrchestrateReject {
                 action_id: action_id.clone(),
             },
@@ -6866,7 +6973,7 @@ impl AIBlock {
         let edit_button = CompactibleActionButton::new(
             "Edit".to_string(),
             Some(KeystrokeSource::Fixed(edit_keystroke)),
-            ButtonSize::InlineActionHeader,
+            ButtonSize::OrchestrateActionButton,
             AIBlockAction::OrchestrateToggleEdit {
                 action_id: action_id.clone(),
             },
@@ -6877,7 +6984,7 @@ impl AIBlock {
         let accept_button = CompactibleSplitActionButton::new(
             "Accept".to_string(),
             Some(KeystrokeSource::Fixed(accept_keystroke)),
-            ButtonSize::InlineActionHeader,
+            ButtonSize::OrchestrateActionButton,
             AIBlockAction::OrchestrateAccept {
                 action_id: action_id.clone(),
             },
@@ -6903,6 +7010,14 @@ impl AIBlock {
         if entry.accept_button.is_none() {
             entry.accept_button = Some(accept_button);
         }
+
+        // Round 6 #1: pre-completion the buttons must render disabled.
+        // `ensure_orchestrate_card_buttons` is called from
+        // `handle_updated_output` on every streaming chunk, so newly
+        // created button views immediately reflect the streaming state
+        // and re-enable on the Complete transition (also synced from
+        // `on_output_status_update`).
+        self.sync_orchestrate_card_buttons_streaming_state(ctx);
     }
 
     fn handle_orchestrate_toggle_edit(
@@ -7266,6 +7381,26 @@ impl AIBlock {
                         "Environment: loading\u{2026}".to_string()
                     });
                 }
+                // Round 6 follow-up B1: prepend a "(no environment)" item
+                // so the user can deselect a previously chosen environment
+                // and revert to the empty-env state. When the cloud agent
+                // launches with no environment_id, the server's StartAgent
+                // producer falls back to the parent's environment if one
+                // is available.
+                let action_id_for_none = action_id_for_picker.clone();
+                items.push(MenuItem::Item(
+                    MenuItemFields::new(ORCHESTRATE_ENV_NONE_LABEL).with_on_select_action(
+                        DropdownAction::SelectActionAndClose(
+                            AIBlockAction::OrchestrateEnvironmentChanged {
+                                action_id: action_id_for_none,
+                                environment_id: String::new(),
+                            },
+                        ),
+                    ),
+                ));
+                if initial_env.is_empty() {
+                    selected_name = Some(ORCHESTRATE_ENV_NONE_LABEL.to_string());
+                }
                 for (env_id, env_name) in &sorted_envs {
                     if env_id == &initial_env {
                         selected_name = Some(env_name.clone());
@@ -7408,6 +7543,13 @@ impl AIBlock {
                 OrchestrateExecutionMode::Local => String::new(),
             };
             environment_picker.update(ctx, |dropdown, ctx_dropdown| {
+                if env_id.is_empty() {
+                    // Round 6 follow-up B1: empty env_id selects the
+                    // synthetic "(no environment)" item at the top of
+                    // the menu, mirroring the deselect path.
+                    dropdown.set_selected_by_name(ORCHESTRATE_ENV_NONE_LABEL, ctx_dropdown);
+                    return;
+                }
                 let envs = AgentConversationsModel::as_ref(ctx_dropdown)
                     .get_all_environment_ids_and_names(ctx_dropdown);
                 if let Some((_, name)) = envs.into_iter().find(|(id, _)| id == &env_id) {
