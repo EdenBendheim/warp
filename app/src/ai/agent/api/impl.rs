@@ -7,7 +7,7 @@ use warp_multi_agent_api as api;
 
 use crate::server::server_api::ServerApi;
 
-use super::{convert_to::convert_input, ConvertToAPITypeError, RequestParams, ResponseStream};
+use super::{ConvertToAPITypeError, RequestParams, ResponseStream, convert_to::convert_input};
 
 pub async fn generate_multi_agent_output(
     server_api: Arc<ServerApi>,
@@ -214,23 +214,29 @@ fn get_supported_tools(params: &RequestParams) -> Vec<api::ToolType> {
     }
 
     if params.orchestration_enabled {
-        // The orchestrate tool replaces start_agent / start_agent_v2 entirely
-        // when both the client-side flag and orchestration v2 are on. The
-        // server's `selectStartAgentTool` hard-switch picks orchestrate over
-        // the legacy start_agent tools whenever they're all advertised, so
-        // there's no per-call coexistence to worry about. We still advertise
-        // SendMessageToAgent alongside.
-        supported_tools.push(
-            if FeatureFlag::OrchestrateTool.is_enabled()
-                && FeatureFlag::OrchestrationV2.is_enabled()
-            {
-                api::ToolType::Orchestrate
-            } else if FeatureFlag::OrchestrationV2.is_enabled() {
-                api::ToolType::StartAgentV2
-            } else {
-                api::ToolType::StartAgent
-            },
-        );
+        // Always advertise the legacy start-agent tool (v2 when
+        // OrchestrationV2 is on, v1 otherwise) so the server can fall
+        // back to it when its own `orchestrate_tool_enabled` flag is
+        // off. The server's tool registration only registers a tool
+        // if the client advertises it; previously we removed
+        // start_agent_v2 from the list when both client-side
+        // orchestrate flags were on, which left the server with
+        // nothing to register when its flag was off and produced a
+        // "start_agent missing" failure path.
+        //
+        // When the client also supports Orchestrate, we advertise it
+        // ALONGSIDE start_agent_v2. The server's `selectStartAgentTool`
+        // picks orchestrate over the legacy variants whenever both
+        // are advertised AND its own flag is on, so there's no
+        // per-call coexistence concern from the model side.
+        supported_tools.push(if FeatureFlag::OrchestrationV2.is_enabled() {
+            api::ToolType::StartAgentV2
+        } else {
+            api::ToolType::StartAgent
+        });
+        if FeatureFlag::OrchestrateTool.is_enabled() && FeatureFlag::OrchestrationV2.is_enabled() {
+            supported_tools.push(api::ToolType::Orchestrate);
+        }
         supported_tools.push(api::ToolType::SendMessageToAgent);
     }
 
