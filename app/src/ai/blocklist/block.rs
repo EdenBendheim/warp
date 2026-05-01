@@ -196,8 +196,8 @@ use crate::ai::execution_profiles::model_menu_items::available_model_menu_items;
 use crate::ai::harness_display;
 use crate::menu::{MenuItem, MenuItemFields};
 use crate::view_components::compactible_split_action_button::CompactibleSplitActionButton;
-use crate::view_components::dropdown::{Dropdown, DropdownAction, DropdownStyle};
-use crate::view_components::FilterableDropdown;
+use crate::view_components::dropdown::{Dropdown, DropdownAction, DropdownEvent, DropdownStyle};
+use crate::view_components::{FilterableDropdown, FilterableDropdownEvent};
 use warpui::elements::{CornerRadius, Radius};
 use warpui::ui_components::components::Coords;
 
@@ -6114,6 +6114,11 @@ impl TypedActionView for AIBlock {
                 // tool call, delegate to the orchestrate accept handler
                 // so Enter triggers the same path as clicking Accept on
                 // the confirmation card.
+                //
+                // Round 7 hotfix diagnostic: log fires unconditionally so
+                // we can tell whether Enter is reaching the dispatcher at
+                // all post-dropdown-interaction.
+                log::info!("[orchestrate-debug] ExecuteNextPendingAction fired");
                 if let Some(orchestrate_id) = self.current_orchestrate_action_id(ctx) {
                     log::info!(
                         "[orchestrate-debug] ExecuteNextPendingAction -> orchestrate accept (action_id={orchestrate_id:?})"
@@ -6727,6 +6732,14 @@ impl TypedActionView for AIBlock {
                 // See note on OrchestrateModelChanged above.
             }
             AIBlockAction::OrchestrateAccept { action_id } => {
+                // Round 7 hotfix: diagnostic for the post-dropdown Accept
+                // bug. If the user clicks Accept and this log doesn't
+                // appear, the click is being absorbed before reaching the
+                // AIBlock action dispatcher (e.g. by a stale dropdown
+                // overlay or focus state).
+                log::info!(
+                    "[orchestrate-debug] OrchestrateAccept handler fired (button click path) action_id={action_id:?}"
+                );
                 self.handle_orchestrate_accept(action_id, ctx);
             }
             AIBlockAction::OrchestrateAcceptMenuToggled { action_id: _ } => {
@@ -7162,6 +7175,13 @@ impl AIBlock {
                     dropdown.set_selected_by_index(idx, ctx_dropdown);
                 }
             });
+            // Round 7 hotfix: refocus the AIBlock when this picker
+            // closes. Without this, focus is left on the now-hidden
+            // Dropdown view and the Enter / Accept-shortcut keymap
+            // bindings (gated on `id!(AIBlock::ui_name())`) no longer
+            // resolve. See `Dropdown::close` (no built-in focus
+            // restoration).
+            Self::subscribe_orchestrate_picker_close(&dropdown_handle, "model", ctx);
             Some(dropdown_handle)
         } else {
             None
@@ -7221,6 +7241,7 @@ impl AIBlock {
                     dropdown.set_selected_by_index(idx, ctx_dropdown);
                 }
             });
+            Self::subscribe_orchestrate_picker_close(&dropdown_handle, "harness", ctx);
             Some(dropdown_handle)
         } else {
             None
@@ -7320,6 +7341,15 @@ impl AIBlock {
                     dropdown.set_selected_by_name(&name, ctx_dropdown);
                 }
             });
+            // FilterableDropdown variant; subscribe to its Close event
+            // separately from the Dropdown helper.
+            ctx.subscribe_to_view(&dropdown_handle, |me, _, event, ctx| {
+                if let FilterableDropdownEvent::Close = event {
+                    log::info!("[orchestrate-debug] env picker closed, refocusing AIBlock");
+                    ctx.focus_self();
+                    me.try_steal_focus(ctx);
+                }
+            });
             Some(dropdown_handle)
         } else {
             None
@@ -7365,6 +7395,7 @@ impl AIBlock {
                 dropdown.set_rich_items(vec![MenuItem::Item(item)], ctx_dropdown);
                 dropdown.set_selected_by_index(0, ctx_dropdown);
             });
+            Self::subscribe_orchestrate_picker_close(&dropdown_handle, "host", ctx);
             Some(dropdown_handle)
         } else {
             None
@@ -7394,6 +7425,26 @@ impl AIBlock {
         // and again after every state-mutating action via
         // `sync_orchestrate_picker_selections`.
         self.sync_orchestrate_picker_selections(action_id, ctx);
+    }
+
+    /// Round 7 hotfix: subscribe to a `Dropdown` picker's events and,
+    /// when the dropdown closes, refocus the AIBlock so its keymap
+    /// context (e.g. `HAS_PENDING_ACTION` gating Enter -> Accept)
+    /// becomes active again. Without this, focus is left on the
+    /// now-hidden Dropdown view and the orchestrate Enter / Accept
+    /// keybindings stop firing.
+    fn subscribe_orchestrate_picker_close(
+        dropdown_handle: &ViewHandle<Dropdown<AIBlockAction>>,
+        picker_label: &'static str,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        ctx.subscribe_to_view(dropdown_handle, move |me, _, event, ctx| {
+            if let DropdownEvent::Close = event {
+                log::info!("[orchestrate-debug] {picker_label} picker closed, refocusing AIBlock");
+                ctx.focus_self();
+                me.try_steal_focus(ctx);
+            }
+        });
     }
 
     /// Re-sync each picker's displayed selection with the authoritative
