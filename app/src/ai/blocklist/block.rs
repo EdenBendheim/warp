@@ -531,6 +531,30 @@ pub(super) struct OrchestrateCardHandles {
     pub(super) host_picker: Option<ViewHandle<Dropdown<AIBlockAction>>>,
 }
 
+/// Snapshot captured at orchestrate-Accept time used for two purposes:
+///
+/// 1. **Idempotency guard.** The presence of an entry in
+///    `AIBlock::orchestrate_spawning` for a given `AIAgentActionId`
+///    indicates that `handle_orchestrate_accept` has already begun
+///    dispatching this action's children. Any subsequent invocation
+///    (Enter keyboard auto-repeat, double-click on Accept, repeated
+///    `ExecuteNextPendingAction` delegation) hits the guard at the top
+///    of the handler and returns early.
+/// 2. **Source for the in-flight "Spawning N agents…" card.** While the
+///    async dispatch batch is still running (Local+harness can take
+///    hundreds of ms because `launch_local_harness_child` performs a
+///    network call), `render_orchestrate` reads this map to render an
+///    in-flight status card in place of the confirmation card. Once the
+///    async outcome callback fires it removes the entry and the
+///    terminal `OrchestrateResult` card takes over.
+#[derive(Debug, Clone)]
+pub(super) struct OrchestrateSpawningSnapshot {
+    /// Number of agents being spawned. Drives pluralization of the
+    /// in-flight card label ("Spawning 1 agent…" vs "Spawning N
+    /// agents…"), matching the terminal-state pluralization.
+    pub(super) agent_count: usize,
+}
+
 /// Like `SecondaryTheme` but with grey text instead of white.
 struct RewindButtonTheme;
 
@@ -1147,6 +1171,14 @@ pub struct AIBlock {
     /// card's interactive controls. Lazily populated alongside
     /// `orchestrate_edit_states`.
     orchestrate_card_handles: HashMap<AIAgentActionId, OrchestrateCardHandles>,
+    /// Per-action snapshot of an in-flight orchestrate dispatch. Inserted
+    /// at the top of `handle_orchestrate_accept` and removed by the async
+    /// outcome callback right before `apply_orchestrate_action_result`.
+    /// Doubles as the idempotency guard for repeat Accept invocations
+    /// (Enter auto-repeat, double-click) and the source for the
+    /// "Spawning N agents…" in-flight card rendered in place of the
+    /// confirmation card while the dispatch is still running.
+    orchestrate_spawning: HashMap<AIAgentActionId, OrchestrateSpawningSnapshot>,
 
     /// Handle for the background link detection task, kept so we can abort a previous
     /// detection when a new one is spawned (e.g. on shell data change).
@@ -1567,6 +1599,7 @@ impl AIBlock {
             has_imported_comments: false,
             orchestrate_edit_states: Default::default(),
             orchestrate_card_handles: Default::default(),
+            orchestrate_spawning: Default::default(),
             link_detection_handle: None,
             #[cfg(feature = "local_fs")]
             resolved_code_block_paths: Default::default(),
@@ -7518,6 +7551,22 @@ impl AIBlock {
         action_id: &AIAgentActionId,
         ctx: &mut ViewContext<Self>,
     ) {
+        // Idempotency guard: presence of an entry in `orchestrate_spawning`
+        // means a previous invocation of this handler has already begun
+        // dispatching children for this action. Repeat invocations
+        // (Enter keyboard auto-repeat, double-click on Accept, repeat
+        // `ExecuteNextPendingAction` delegation) MUST short-circuit here
+        // so we don't dispatch the batch a second time and create extra
+        // panes. The entry is removed by the async outcome callback
+        // immediately before `apply_orchestrate_action_result` runs.
+        let already_accepted = self.orchestrate_spawning.contains_key(action_id);
+        log::info!(
+            "[orchestrate-debug] handle_orchestrate_accept entry action_id={action_id:?} already_accepted={already_accepted}"
+        );
+        if already_accepted {
+            return;
+        }
+
         // Validation gate: per spec §8, Cloud-without-env and OpenCode+Cloud
         // disable Accept and surface inline error text. Clicks bypass the
         // gate (e.g. via keyboard shortcut) bail out here too.
@@ -7579,6 +7628,20 @@ impl AIBlock {
         let base_prompt = request.base_prompt.clone();
 
         let executor_handle = self.action_model.as_ref(ctx).start_agent_executor(ctx);
+
+        // Record the in-flight dispatch so subsequent calls hit the
+        // idempotency guard above and so `render_orchestrate` switches
+        // from the confirmation card to the "Spawning N agents…" card.
+        // The async outcome callback below removes this entry just
+        // before applying the terminal `OrchestrateResult`, at which
+        // point the post-action card takes over.
+        self.orchestrate_spawning.insert(
+            action_id.clone(),
+            OrchestrateSpawningSnapshot {
+                agent_count: agent_run_configs.len(),
+            },
+        );
+        ctx.notify();
 
         // Pre-resolve each child's `StartAgentExecutionMode`, then dispatch
         // through the executor in input order. Pre-flight failures (Remote
@@ -7684,6 +7747,11 @@ impl AIBlock {
                     execution_mode: launched_mode,
                     agents,
                 };
+                // Drop the in-flight snapshot before applying the
+                // terminal result so `render_orchestrate` reads the
+                // post-action `Launched` state on the next render
+                // rather than the "Spawning…" in-flight card.
+                me.orchestrate_spawning.remove(&action_id_for_result);
                 me.apply_orchestrate_action_result(&action_id_for_result, task_id, result, ctx);
             },
         );

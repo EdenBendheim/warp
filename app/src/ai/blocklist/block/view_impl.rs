@@ -1097,6 +1097,7 @@ impl View for AIBlock {
                 imported_comments: &self.imported_comments,
                 orchestrate_edit_states: &self.orchestrate_edit_states,
                 orchestrate_card_handles: &self.orchestrate_card_handles,
+                orchestrate_spawning: &self.orchestrate_spawning,
                 #[cfg(feature = "local_fs")]
                 resolved_code_block_paths: &self.resolved_code_block_paths,
                 #[cfg(feature = "local_fs")]

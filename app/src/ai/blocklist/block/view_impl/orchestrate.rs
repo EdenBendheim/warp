@@ -37,7 +37,9 @@ use crate::ai::agent::{AIAgentActionId, AIAgentActionResultType};
 use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::blocklist::action_model::AIActionStatus;
 use crate::ai::blocklist::agent_view::orchestration_pill_bar::render_static_agent_pill;
-use crate::ai::blocklist::block::{AIBlockAction, OrchestrateCardHandles, OrchestrateEditState};
+use crate::ai::blocklist::block::{
+    AIBlockAction, OrchestrateCardHandles, OrchestrateEditState, OrchestrateSpawningSnapshot,
+};
 use crate::ai::blocklist::inline_action::inline_action_header::{HeaderConfig, InteractionMode};
 use crate::ai::blocklist::inline_action::inline_action_icons;
 use crate::ai::blocklist::inline_action::requested_action::render_requested_action_row_for_text;
@@ -84,6 +86,18 @@ pub(super) fn render_orchestrate(
             result.result
         );
         return Empty::new().finish();
+    }
+
+    // In-flight: the user has accepted the orchestrate card and the
+    // async dispatch batch is running. Render the "Spawning N agents…"
+    // card (visually mirrors the terminal `Launched` success card)
+    // until the outcome callback removes the snapshot and applies the
+    // terminal result. This addresses the UX gap where the
+    // confirmation card otherwise stays visible for hundreds of ms
+    // (Local+harness `create_agent_task` round-trip), tempting users
+    // to mash Enter.
+    if let Some(snapshot) = props.orchestrate_spawning.get(action_id) {
+        return render_spawning_card(snapshot, appearance, app);
     }
 
     // Restored-from-history but not finished: there's no point in
@@ -335,10 +349,31 @@ fn render_terminal_state(
 
 #[derive(Clone, Copy)]
 enum StatusKind {
+    /// In-flight orchestrate dispatch — children are being spawned.
+    /// Renders with `yellow_running_icon` to convey "in progress".
+    Spawning,
     Success,
     Mixed,
     Failure,
     Cancelled,
+}
+
+/// Renders the in-flight "Spawning N agents…" card shown after the
+/// user clicks Accept and before the async dispatch batch resolves.
+/// Visually identical to the terminal `Launched` success card except
+/// for the label text and the running-state icon.
+fn render_spawning_card(
+    snapshot: &OrchestrateSpawningSnapshot,
+    appearance: &Appearance,
+    app: &AppContext,
+) -> Box<dyn Element> {
+    let total = snapshot.agent_count;
+    let label = if total == 1 {
+        "Spawning 1 agent…".to_string()
+    } else {
+        format!("Spawning {total} agents…")
+    };
+    render_status_only_card(label, appearance, StatusKind::Spawning, app)
 }
 
 fn render_status_only_card(
@@ -349,7 +384,7 @@ fn render_status_only_card(
 ) -> Box<dyn Element> {
     let theme = appearance.theme();
     let icon = match kind {
-        StatusKind::Mixed => icons::yellow_running_icon(appearance).finish(),
+        StatusKind::Spawning | StatusKind::Mixed => icons::yellow_running_icon(appearance).finish(),
         StatusKind::Success => inline_action_icons::green_check_icon(appearance).finish(),
         StatusKind::Failure => inline_action_icons::red_x_icon(appearance).finish(),
         StatusKind::Cancelled => inline_action_icons::cancelled_icon(appearance).finish(),

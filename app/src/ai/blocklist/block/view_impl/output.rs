@@ -197,6 +197,14 @@ pub(crate) struct Props<'a> {
         &'a HashMap<AIAgentActionId, super::super::OrchestrateEditState>,
     pub(super) orchestrate_card_handles:
         &'a HashMap<AIAgentActionId, super::super::OrchestrateCardHandles>,
+    /// Per-action snapshot of an in-flight orchestrate dispatch. Used by
+    /// `render_orchestrate` to (a) bypass Round 7's hide-while-streaming
+    /// gate so the spawning card still renders if streaming re-enters
+    /// during the dispatch window, and (b) source the
+    /// "Spawning N agents…" in-flight card. See
+    /// `block.rs::OrchestrateSpawningSnapshot` for full semantics.
+    pub(super) orchestrate_spawning:
+        &'a HashMap<AIAgentActionId, super::super::OrchestrateSpawningSnapshot>,
     #[cfg(feature = "local_fs")]
     pub(crate) resolved_code_block_paths:
         &'a HashMap<std::path::PathBuf, Option<std::path::PathBuf>>,
@@ -763,9 +771,17 @@ pub(super) fn render(props: Props, app: &AppContext) -> Box<dyn Element> {
                             // apply-diff (`RequestFileEdits`) gate above.
                             // The streaming status row shows a per-tool
                             // "Spawning agents..." message instead.
+                            //
+                            // Exception: if the action has an entry in
+                            // `orchestrate_spawning`, the user has already
+                            // accepted and we are mid-dispatch — in that
+                            // case keep rendering so the in-flight
+                            // "Spawning N agents…" card stays visible
+                            // even if the AI block re-enters streaming.
                             should_render_footer = false;
                             should_render_suggestions = false;
-                            if !status.is_streaming() {
+                            if !status.is_streaming() || props.orchestrate_spawning.contains_key(id)
+                            {
                                 output_items.add_child(orchestrate::render_orchestrate(
                                     props, id, req, app,
                                 ));
