@@ -10,7 +10,7 @@ use ai::agent::action_result::{
     RunAgentsResult,
 };
 use ai::skills::SkillReference;
-use futures::{future::BoxFuture, FutureExt};
+use futures::{FutureExt, future::BoxFuture};
 use warpui::{Entity, ModelContext, ModelHandle};
 
 use super::start_agent::{StartAgentExecutor, StartAgentOutcome};
@@ -54,10 +54,7 @@ impl Entity for RunAgentsExecutor {
 }
 
 impl RunAgentsExecutor {
-    pub fn new(
-        start_agent_executor: ModelHandle<StartAgentExecutor>,
-        _ctx: &mut ModelContext<Self>,
-    ) -> Self {
+    pub fn new(start_agent_executor: ModelHandle<StartAgentExecutor>) -> Self {
         Self {
             pending: HashMap::new(),
             start_agent_executor,

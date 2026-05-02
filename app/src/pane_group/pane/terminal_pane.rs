@@ -3,7 +3,7 @@
 use crate::pane_group::CodeSource;
 use std::{collections::HashMap, sync::mpsc::SyncSender};
 
-use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use url::Url;
 use warp_cli::agent::Harness;
 use warp_multi_agent_api as multi_agent_api;
@@ -13,24 +13,25 @@ use warpui::{
 };
 
 use crate::{
+    AIExecutionProfilesModel,
     ai::{
         active_agent_views_model::ActiveAgentViewsModel,
         agent::{
-            conversation::{AIConversationId, ConversationStatus},
             LifecycleEventType, StartAgentExecutionMode,
+            conversation::{AIConversationId, ConversationStatus},
         },
-        ambient_agents::{task::HarnessConfig, AgentConfigSnapshot},
+        ambient_agents::{AgentConfigSnapshot, task::HarnessConfig},
         blocklist::{
-            agent_view::AgentViewEntryOrigin, orchestration_events::OrchestrationEventService,
-            BlocklistAIHistoryModel, StartAgentRequest,
+            BlocklistAIHistoryModel, StartAgentRequest, agent_view::AgentViewEntryOrigin,
+            orchestration_events::OrchestrationEventService,
         },
         llms::LLMPreferences,
         skills::SkillManager,
     },
     app_state::{AmbientAgentPaneSnapshot, LeafContents, TerminalPaneSnapshot},
     pane_group::child_agent::{
-        create_error_child_agent_conversation, create_hidden_child_agent_conversation,
-        HiddenChildAgentConversation,
+        HiddenChildAgentConversation, create_error_child_agent_conversation,
+        create_hidden_child_agent_conversation,
     },
     pane_group::{self, Direction, Event::OpenConversationHistory, PaneGroup},
     persistence::{BlockCompleted, ModelEvent},
@@ -38,19 +39,17 @@ use crate::{
     session_management::SessionNavigationData,
     terminal::cli_agent_sessions::CLIAgentSessionsModel,
     terminal::{
+        TerminalManager, TerminalView,
         general_settings::GeneralSettings,
         shared_session::{
-            join_link,
+            SharedSessionStatus, join_link,
             manager::{Manager, ManagerEvent},
             role_change_modal::RoleChangeOpenSource,
-            SharedSessionStatus,
         },
         view::Event,
-        TerminalManager, TerminalView,
     },
     view_components::ToastFlavor,
-    workspace::{sync_inputs::SyncedInputState, PaneViewLocator},
-    AIExecutionProfilesModel,
+    workspace::{PaneViewLocator, sync_inputs::SyncedInputState},
 };
 
 #[cfg(feature = "local_fs")]
@@ -61,7 +60,7 @@ use crate::server::server_api::ServerApiProvider;
 use warp_core::execution_mode::AppExecutionMode;
 
 #[cfg(not(target_family = "wasm"))]
-use super::local_harness_launch::{prepare_local_harness_child_launch, PreparedLocalHarnessLaunch};
+use super::local_harness_launch::{PreparedLocalHarnessLaunch, prepare_local_harness_child_launch};
 use super::{
     DetachType, PaneConfiguration, PaneContent, PaneId, PaneStackEvent, PaneView, ShareableLink,
     ShareableLinkError, TerminalPaneId,
@@ -1228,7 +1227,7 @@ fn launch_local_no_harness_child(
     model_id: Option<String>,
     ctx: &mut ViewContext<PaneGroup>,
 ) -> Option<AIConversationId> {
-    let _ = model_id; // model_id is applied below via apply_child_model_id_override.
+    // model_id is applied below via apply_child_model_id_override.
     let request_id = request.id;
     let HiddenChildAgentConversation {
         terminal_view: new_terminal_view,
@@ -1285,7 +1284,7 @@ fn launch_local_harness_child(
     terminal_pane_id: TerminalPaneId,
     request: StartAgentRequest,
     harness_type: String,
-    _model_id: Option<String>,
+    model_id: Option<String>,
     ctx: &mut ViewContext<PaneGroup>,
 ) {
     let startup_directory = group.startup_path_for_new_session(Some(terminal_pane_id), ctx);
@@ -1296,7 +1295,6 @@ fn launch_local_harness_child(
     let parent_run_id = request.parent_run_id.clone();
     let prompt = request.prompt.clone();
     let lifecycle_subscription = request.lifecycle_subscription.clone();
-    let _ = lifecycle_subscription;
     let shell_type = group
         .terminal_view_from_pane_id(parent_pane_id, ctx)
         .and_then(|terminal_view| terminal_view.as_ref(ctx).active_session_shell_type(ctx));
@@ -1334,6 +1332,8 @@ fn launch_local_harness_child(
                     env_vars,
                     ctx,
                 ) {
+                    apply_child_model_id_override(terminal_view_id, model_id.as_deref(), ctx);
+
                     BlocklistAIHistoryModel::handle(ctx).update(ctx, |model, ctx| {
                         model.record_new_conversation_request_complete(
                             request_id,
@@ -1351,6 +1351,13 @@ fn launch_local_harness_child(
                             ctx,
                         );
                     });
+
+                    register_legacy_local_lifecycle_subscription(
+                        parent_conversation_id,
+                        conversation_id,
+                        lifecycle_subscription.clone(),
+                        ctx,
+                    );
 
                     new_terminal_view.update(ctx, |terminal_view, ctx| {
                         terminal_view.execute_command_or_set_pending(&command, ctx);

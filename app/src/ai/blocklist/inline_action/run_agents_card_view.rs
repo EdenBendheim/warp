@@ -69,6 +69,9 @@ const RUN_AGENTS_ENV_NONE_LABEL: &str = "(no environment)";
 const RUN_AGENTS_EDITOR_OPEN: &str = "RunAgentsEditorOpen";
 
 const RUN_AGENTS_PICKER_HEIGHT: f32 = 36.;
+const RUN_AGENTS_PICKER_BORDER_WIDTH: f32 = 1.;
+const RUN_AGENTS_PICKER_FONT_SIZE: f32 = 14.;
+const ORCHESTRATE_PICKER_RADIUS: f32 = 4.;
 
 pub fn init(app: &mut AppContext) {
     use warpui::keymap::macros::*;
@@ -412,9 +415,6 @@ impl RunAgentsCardView {
     /// Lazily construct the picker dropdown views (idempotent).
     fn ensure_pickers(&mut self, ctx: &mut ViewContext<Self>) {
         // Shared picker styling.
-        const ORCHESTRATE_PICKER_RADIUS: f32 = 4.;
-        const RUN_AGENTS_PICKER_BORDER_WIDTH: f32 = 1.;
-        const RUN_AGENTS_PICKER_FONT_SIZE: f32 = 14.;
         let picker_padding = Coords {
             top: 8.,
             bottom: 8.,
@@ -453,25 +453,14 @@ impl RunAgentsCardView {
             } else {
                 state_snapshot.model_id.clone()
             };
-            let picker_padding_clone = picker_padding;
-            let picker_corner_radius_clone = picker_corner_radius;
-            let picker_background_clone = picker_background_warpui;
-            let picker_border_color_clone = picker_border_color_warpui;
-            let dropdown_handle = ctx.add_typed_action_view(move |ctx_dropdown| {
-                let mut dropdown = Dropdown::<RunAgentsCardViewAction>::new(ctx_dropdown);
-                dropdown.set_use_overlay_layer(false, ctx_dropdown);
-                dropdown.set_main_axis_size(MainAxisSize::Max, ctx_dropdown);
-                dropdown.set_style(DropdownStyle::ActionButtonSecondary, ctx_dropdown);
-                dropdown.set_top_bar_height(RUN_AGENTS_PICKER_HEIGHT, ctx_dropdown);
-                dropdown.set_padding(picker_padding_clone, ctx_dropdown);
-                dropdown.set_border_radius(picker_corner_radius_clone, ctx_dropdown);
-                dropdown.set_background(picker_background_clone, ctx_dropdown);
-                dropdown.set_border_color(picker_border_color_clone, ctx_dropdown);
-                dropdown.set_border_width(RUN_AGENTS_PICKER_BORDER_WIDTH, ctx_dropdown);
-                dropdown.set_font_size(RUN_AGENTS_PICKER_FONT_SIZE, ctx_dropdown);
-                dropdown.set_font_color(picker_font_color, ctx_dropdown);
-                dropdown
-            });
+            let dropdown_handle = Self::new_standard_picker_dropdown(
+                picker_padding,
+                picker_corner_radius,
+                picker_background_warpui,
+                picker_border_color_warpui,
+                picker_font_color,
+                ctx,
+            );
             dropdown_handle.update(ctx, |dropdown, ctx_dropdown| {
                 let llm_prefs = LLMPreferences::as_ref(ctx_dropdown);
                 let choices: Vec<_> = llm_prefs.get_base_llm_choices_for_agent_mode().collect();
@@ -504,31 +493,25 @@ impl RunAgentsCardView {
 
         if self.handles.harness_picker.is_none() {
             let initial_harness = state_snapshot.harness_type.clone();
-            let picker_padding_clone = picker_padding;
-            let picker_corner_radius_clone = picker_corner_radius;
-            let picker_background_clone = picker_background_warpui;
-            let picker_border_color_clone = picker_border_color_warpui;
-            let dropdown_handle = ctx.add_typed_action_view(move |ctx_dropdown| {
-                let mut dropdown = Dropdown::<RunAgentsCardViewAction>::new(ctx_dropdown);
-                dropdown.set_use_overlay_layer(false, ctx_dropdown);
-                dropdown.set_main_axis_size(MainAxisSize::Max, ctx_dropdown);
-                dropdown.set_style(DropdownStyle::ActionButtonSecondary, ctx_dropdown);
-                dropdown.set_top_bar_height(RUN_AGENTS_PICKER_HEIGHT, ctx_dropdown);
-                dropdown.set_padding(picker_padding_clone, ctx_dropdown);
-                dropdown.set_border_radius(picker_corner_radius_clone, ctx_dropdown);
-                dropdown.set_background(picker_background_clone, ctx_dropdown);
-                dropdown.set_border_color(picker_border_color_clone, ctx_dropdown);
-                dropdown.set_border_width(RUN_AGENTS_PICKER_BORDER_WIDTH, ctx_dropdown);
-                dropdown.set_font_size(RUN_AGENTS_PICKER_FONT_SIZE, ctx_dropdown);
-                dropdown.set_font_color(picker_font_color, ctx_dropdown);
-                dropdown
-            });
+            let dropdown_handle = Self::new_standard_picker_dropdown(
+                picker_padding,
+                picker_corner_radius,
+                picker_background_warpui,
+                picker_border_color_warpui,
+                picker_font_color,
+                ctx,
+            );
             dropdown_handle.update(ctx, |dropdown, ctx_dropdown| {
                 let mut items: Vec<MenuItem<DropdownAction<RunAgentsCardViewAction>>> = Vec::new();
                 let mut selected_idx = None;
-                for (idx, harness) in [Harness::Oz, Harness::Claude, Harness::Gemini]
-                    .into_iter()
-                    .enumerate()
+                for (idx, harness) in [
+                    Harness::Oz,
+                    Harness::Claude,
+                    Harness::Gemini,
+                    Harness::Codex,
+                ]
+                .into_iter()
+                .enumerate()
                 {
                     let mut fields = MenuItemFields::new(harness_display::display_name(harness))
                         .with_icon(harness_display::icon_for(harness));
@@ -658,6 +641,34 @@ impl RunAgentsCardView {
         // Dropdown's internal selection display is unreliable in this
         // view tree, so we explicitly drive it.
         self.sync_picker_selections(ctx);
+    }
+
+    /// Shared dropdown construction with the standard orchestrate-card
+    /// styling (border, radius, background, font). Both the model and
+    /// harness pickers use identical chrome; only their item lists differ.
+    fn new_standard_picker_dropdown(
+        padding: Coords,
+        corner_radius: CornerRadius,
+        background: warpui::elements::Fill,
+        border_color: warpui::elements::Fill,
+        font_color: ColorU,
+        ctx: &mut ViewContext<Self>,
+    ) -> ViewHandle<Dropdown<RunAgentsCardViewAction>> {
+        ctx.add_typed_action_view(move |ctx_dropdown| {
+            let mut dropdown = Dropdown::<RunAgentsCardViewAction>::new(ctx_dropdown);
+            dropdown.set_use_overlay_layer(false, ctx_dropdown);
+            dropdown.set_main_axis_size(MainAxisSize::Max, ctx_dropdown);
+            dropdown.set_style(DropdownStyle::ActionButtonSecondary, ctx_dropdown);
+            dropdown.set_top_bar_height(RUN_AGENTS_PICKER_HEIGHT, ctx_dropdown);
+            dropdown.set_padding(padding, ctx_dropdown);
+            dropdown.set_border_radius(corner_radius, ctx_dropdown);
+            dropdown.set_background(background, ctx_dropdown);
+            dropdown.set_border_color(border_color, ctx_dropdown);
+            dropdown.set_border_width(RUN_AGENTS_PICKER_BORDER_WIDTH, ctx_dropdown);
+            dropdown.set_font_size(RUN_AGENTS_PICKER_FONT_SIZE, ctx_dropdown);
+            dropdown.set_font_color(font_color, ctx_dropdown);
+            dropdown
+        })
     }
 
     fn subscribe_picker_close(
