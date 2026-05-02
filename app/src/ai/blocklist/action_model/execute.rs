@@ -23,13 +23,13 @@ pub(super) mod use_computer;
 
 use ai::agent::action_result::{InsertReviewCommentsResult, RequestCommandOutputResult};
 pub use ask_user_question::AskUserQuestionExecutor;
-use call_mcp_tool::CallMCPToolExecutor;
 pub(crate) use call_mcp_tool::coerce_integer_args;
+use call_mcp_tool::CallMCPToolExecutor;
 use create_documents::CreateDocumentsExecutor;
 use edit_documents::EditDocumentsExecutor;
 use fetch_conversation::FetchConversationExecutor;
 use file_glob::FileGlobExecutor;
-use futures::{FutureExt, future::BoxFuture};
+use futures::{future::BoxFuture, FutureExt};
 use grep::GrepExecutor;
 use parking_lot::FairMutex;
 use read_documents::ReadDocumentsExecutor;
@@ -37,16 +37,16 @@ pub(super) use read_files::ReadFilesExecutor;
 use read_mcp_resource::ReadMCPResourceExecutor;
 use read_skill::ReadSkillExecutor;
 use request_computer_use::RequestComputerUseExecutor;
+pub(crate) use request_file_edits::apply_edits;
 pub(crate) use request_file_edits::FileReadResult;
 pub(crate) use request_file_edits::MalformedFinalLineProxyEvent;
-pub(crate) use request_file_edits::apply_edits;
 pub use request_file_edits::{
     EditAcceptAndContinueClickedEvent, EditAcceptClickedEvent, EditResolvedEvent, EditStats,
     RequestFileEditsExecutor, RequestFileEditsFormatKind, RequestFileEditsTelemetryEvent,
 };
-pub use run_agents::{RunAgentsExecutor, RunAgentsExecutorEvent, RunAgentsSpawningSnapshot};
 #[cfg(test)]
 pub use run_agents::{compose_run_agents_child_prompt, run_agents_to_start_agent_mode};
+pub use run_agents::{RunAgentsExecutor, RunAgentsExecutorEvent, RunAgentsSpawningSnapshot};
 pub use send_message::SendMessageToAgentExecutor;
 use serde::{Deserialize, Serialize};
 pub use shell_command::{ShellCommandExecutor, ShellCommandExecutorEvent};
@@ -72,13 +72,13 @@ use warp_util::file::FileLoadError;
 #[cfg(feature = "local_fs")]
 use warp_util::file_type::is_buffer_binary;
 use warpui::{
-    AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity,
     r#async::{Spawnable, SpawnableOutput},
+    AppContext, Entity, EntityId, ModelContext, ModelHandle, SingletonEntity,
 };
 
 #[cfg(feature = "local_fs")]
 use crate::util::image::{
-    ProcessImageResult, is_supported_image_mime_type, process_image_for_agent,
+    is_supported_image_mime_type, process_image_for_agent, ProcessImageResult,
 };
 #[cfg(feature = "local_fs")]
 use mime_guess::from_path;
@@ -87,22 +87,22 @@ use self::search_codebase::SearchCodebaseExecutor;
 #[cfg(feature = "local_fs")]
 use crate::ai::{agent::AnyFileContent, paths::host_native_absolute_path};
 use crate::{
-    BlocklistAIHistoryModel,
     ai::{
         agent::{
-            AIAgentAction, AIAgentActionId, AIAgentActionResult, AIAgentActionResultType,
-            AIAgentActionType, CancellationReason, FileContext, FileLocations, ServerOutputId,
-            conversation::AIConversationId, task::TaskId,
+            conversation::AIConversationId, task::TaskId, AIAgentAction, AIAgentActionId,
+            AIAgentActionResult, AIAgentActionResultType, AIAgentActionType, CancellationReason,
+            FileContext, FileLocations, ServerOutputId,
         },
         ambient_agents::AmbientAgentTaskId,
         get_relevant_files::controller::GetRelevantFilesController,
     },
     terminal::{
-        ShellLaunchData, TerminalModel,
-        model::session::{ExecuteCommandOptions, Session, active_session::ActiveSession},
+        model::session::{active_session::ActiveSession, ExecuteCommandOptions, Session},
         model_events::ModelEventDispatcher,
         shell::ShellType,
+        ShellLaunchData, TerminalModel,
     },
+    BlocklistAIHistoryModel,
 };
 
 /// Types of actions that can be executed in parallel.

@@ -10,7 +10,7 @@ use ai::agent::action_result::{
     RunAgentsResult,
 };
 use ai::skills::SkillReference;
-use futures::{FutureExt, future::BoxFuture};
+use futures::{future::BoxFuture, FutureExt};
 use warpui::{Entity, ModelContext, ModelHandle};
 
 use super::start_agent::{StartAgentExecutor, StartAgentOutcome};

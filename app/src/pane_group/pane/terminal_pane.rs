@@ -3,7 +3,7 @@
 use crate::pane_group::CodeSource;
 use std::{collections::HashMap, sync::mpsc::SyncSender};
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use url::Url;
 use warp_cli::agent::Harness;
 use warp_multi_agent_api as multi_agent_api;
@@ -13,25 +13,24 @@ use warpui::{
 };
 
 use crate::{
-    AIExecutionProfilesModel,
     ai::{
         active_agent_views_model::ActiveAgentViewsModel,
         agent::{
-            LifecycleEventType, StartAgentExecutionMode,
             conversation::{AIConversationId, ConversationStatus},
+            LifecycleEventType, StartAgentExecutionMode,
         },
-        ambient_agents::{AgentConfigSnapshot, task::HarnessConfig},
+        ambient_agents::{task::HarnessConfig, AgentConfigSnapshot},
         blocklist::{
-            BlocklistAIHistoryModel, StartAgentRequest, agent_view::AgentViewEntryOrigin,
-            orchestration_events::OrchestrationEventService,
+            agent_view::AgentViewEntryOrigin, orchestration_events::OrchestrationEventService,
+            BlocklistAIHistoryModel, StartAgentRequest,
         },
         llms::LLMPreferences,
         skills::SkillManager,
     },
     app_state::{AmbientAgentPaneSnapshot, LeafContents, TerminalPaneSnapshot},
     pane_group::child_agent::{
-        HiddenChildAgentConversation, create_error_child_agent_conversation,
-        create_hidden_child_agent_conversation,
+        create_error_child_agent_conversation, create_hidden_child_agent_conversation,
+        HiddenChildAgentConversation,
     },
     pane_group::{self, Direction, Event::OpenConversationHistory, PaneGroup},
     persistence::{BlockCompleted, ModelEvent},
@@ -39,17 +38,19 @@ use crate::{
     session_management::SessionNavigationData,
     terminal::cli_agent_sessions::CLIAgentSessionsModel,
     terminal::{
-        TerminalManager, TerminalView,
         general_settings::GeneralSettings,
         shared_session::{
-            SharedSessionStatus, join_link,
+            join_link,
             manager::{Manager, ManagerEvent},
             role_change_modal::RoleChangeOpenSource,
+            SharedSessionStatus,
         },
         view::Event,
+        TerminalManager, TerminalView,
     },
     view_components::ToastFlavor,
-    workspace::{PaneViewLocator, sync_inputs::SyncedInputState},
+    workspace::{sync_inputs::SyncedInputState, PaneViewLocator},
+    AIExecutionProfilesModel,
 };
 
 #[cfg(feature = "local_fs")]
@@ -60,7 +61,7 @@ use crate::server::server_api::ServerApiProvider;
 use warp_core::execution_mode::AppExecutionMode;
 
 #[cfg(not(target_family = "wasm"))]
-use super::local_harness_launch::{PreparedLocalHarnessLaunch, prepare_local_harness_child_launch};
+use super::local_harness_launch::{prepare_local_harness_child_launch, PreparedLocalHarnessLaunch};
 use super::{
     DetachType, PaneConfiguration, PaneContent, PaneId, PaneStackEvent, PaneView, ShareableLink,
     ShareableLinkError, TerminalPaneId,

@@ -29,8 +29,8 @@ use warp_core::ui::theme::Fill;
 use crate::ai::agent::icons;
 use crate::ai::agent::{AIAgentActionId, AIAgentActionResultType};
 use crate::ai::blocklist::action_model::{
-    AIActionStatus, BlocklistAIActionModel, RunAgentsExecutor, RunAgentsExecutorEvent,
-    RunAgentsSpawningSnapshot,
+    AIActionStatus, BlocklistAIActionEvent, BlocklistAIActionModel, RunAgentsExecutor,
+    RunAgentsExecutorEvent, RunAgentsSpawningSnapshot,
 };
 use crate::ai::blocklist::agent_view::orchestration_pill_bar::render_static_agent_pill;
 use crate::ai::blocklist::block::model::AIBlockModel;
@@ -312,6 +312,18 @@ impl RunAgentsCardView {
             }
             RunAgentsExecutorEvent::SpawningStarted { .. }
             | RunAgentsExecutorEvent::SpawningFinished { .. } => {}
+        });
+
+        // Re-render when this action finishes (e.g. cancelled via
+        // Ctrl+C at the terminal level) so render() picks up the
+        // Finished status from the action model.
+        let action_id_for_finished = action_id.clone();
+        ctx.subscribe_to_model(&action_model, move |_, _, event, ctx| {
+            if let BlocklistAIActionEvent::FinishedAction { action_id, .. } = event {
+                if action_id == &action_id_for_finished {
+                    ctx.notify();
+                }
+            }
         });
 
         Self {
