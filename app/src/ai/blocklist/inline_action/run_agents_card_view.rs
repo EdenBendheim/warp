@@ -549,7 +549,6 @@ impl RunAgentsCardView {
             let dropdown_handle = ctx.add_typed_action_view(move |ctx_dropdown| {
                 let mut dropdown = FilterableDropdown::<RunAgentsCardViewAction>::new(ctx_dropdown);
                 dropdown.set_use_overlay_layer(true, ctx_dropdown);
-                dropdown.set_always_show_filter(true, ctx_dropdown);
                 dropdown.set_main_axis_size(MainAxisSize::Max, ctx_dropdown);
                 dropdown.set_button_variant(ButtonVariant::Secondary);
                 dropdown.set_style(picker_styles_clone);
@@ -1195,9 +1194,11 @@ fn render_picker_row_quad(
                                 .with_child(ChildView::new(editor).finish())
                                 .finish(),
                         )
-                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(
+                            ORCHESTRATE_PICKER_RADIUS,
+                        )))
                         .with_border(
-                            Border::all(1.)
+                            Border::all(RUN_AGENTS_PICKER_BORDER_WIDTH)
                                 .with_border_fill(Fill::Solid(ColorU::new(0x29, 0x29, 0x29, 0xff))),
                         )
                         .with_background(appearance.theme().surface_overlay_1())

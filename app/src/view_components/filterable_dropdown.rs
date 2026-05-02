@@ -73,11 +73,6 @@ pub struct FilterableDropdown<A: Action + Clone> {
     /// picker) that need to render in the parent's Normal layer
     /// instead of an overlay.
     use_overlay_layer: bool,
-    /// When true, the top bar always renders the filter/search input
-    /// (with magnifying glass icon) instead of the closed-state button.
-    /// Clicking the filter input auto-expands the item menu; selecting
-    /// an item or pressing Escape collapses just the menu.
-    always_show_filter: bool,
 }
 
 impl<A> FilterableDropdown<A>
@@ -136,7 +131,6 @@ where
             vertical_margin: DROPDOWN_PADDING,
             top_bar_height: TOP_MENU_BAR_HEIGHT,
             use_overlay_layer: true,
-            always_show_filter: false,
         }
     }
 
@@ -146,17 +140,7 @@ where
         ctx.notify();
     }
 
-    /// When enabled, the top bar permanently shows the search/filter
-    /// input (magnifying-glass icon + editor) even when the item menu
-    /// is collapsed. Clicking or focusing the input auto-expands the
-    /// menu; selecting an item or pressing Escape collapses just the
-    /// menu while keeping the filter input visible.
-    pub fn set_always_show_filter(&mut self, always: bool, ctx: &mut ViewContext<Self>) {
-        self.always_show_filter = always;
-        ctx.notify();
-    }
-
-    /// Override the top-bar height. Mirrors `Dropdown::set_top_bar_height`
+    /// Override the top-bar height.
     /// so callers (e.g. the orchestrate environment picker) that mix
     /// `Dropdown` and `FilterableDropdown` in the same row can size them
     /// identically.
@@ -530,7 +514,7 @@ where
     }
 
     fn render_top_bar(&self, appearance: &Appearance) -> Box<dyn Element> {
-        let top_bar_element = if self.is_expanded || self.always_show_filter {
+        let top_bar_element = if self.is_expanded {
             self.render_filter_input(appearance)
         } else {
             self.render_closed_top_bar(appearance)
@@ -600,14 +584,7 @@ where
 
     fn handle_filter_editor_event(&mut self, event: &EditorEvent, ctx: &mut ViewContext<Self>) {
         match event {
-            EditorEvent::Edited(_) => {
-                // Auto-expand when the user starts typing in always-show-filter mode.
-                if self.always_show_filter && !self.is_expanded {
-                    self.is_expanded = true;
-                    ctx.notify();
-                }
-                self.set_filtered_items(ctx);
-            }
+            EditorEvent::Edited(_) => self.set_filtered_items(ctx),
             EditorEvent::Escape => self.close(ctx),
             EditorEvent::Enter => {
                 let selected_action = match self.selected_item.as_ref() {
@@ -738,12 +715,6 @@ where
 
     fn on_focus(&mut self, focus_ctx: &FocusContext, ctx: &mut ViewContext<Self>) {
         if focus_ctx.is_self_focused() {
-            // In always-show-filter mode, clicking the filter input
-            // should auto-expand the item menu.
-            if self.always_show_filter && !self.is_expanded {
-                self.is_expanded = true;
-                ctx.emit(FilterableDropdownEvent::ToggleExpanded);
-            }
             self.focus(0, ctx)
         }
     }
