@@ -23,6 +23,7 @@ use warpui::{
 };
 
 use warp_cli::agent::Harness;
+use warp_core::channel::{Channel, ChannelState};
 use warp_core::ui::theme::Fill;
 
 use crate::ai::agent::icons;
@@ -44,10 +45,6 @@ use crate::ai::cloud_environments::CloudAmbientAgentEnvironment;
 use crate::ai::execution_profiles::model_menu_items::available_model_menu_items;
 use crate::ai::harness_display;
 use crate::appearance::Appearance;
-use crate::editor::{
-    EditorView, Event as EditorEvent, PropagateAndNoOpNavigationKeys, SingleLineEditorOptions,
-    TextOptions,
-};
 use crate::menu::{MenuItem, MenuItemFields};
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
@@ -56,9 +53,7 @@ use crate::view_components::compactible_action_button::{
     CompactibleActionButton, RenderCompactibleActionButton, MEDIUM_SIZE_SWITCH_THRESHOLD,
 };
 use crate::view_components::compactible_split_action_button::CompactibleSplitActionButton;
-use crate::view_components::dropdown::{
-    Dropdown, DropdownAction, DropdownEvent, DropdownStyle, DROPDOWN_PADDING,
-};
+use crate::view_components::dropdown::{Dropdown, DropdownAction, DropdownEvent, DropdownStyle};
 use crate::view_components::{FilterableDropdown, FilterableDropdownEvent};
 use crate::LLMPreferences;
 
@@ -214,8 +209,7 @@ struct RunAgentsCardHandles {
     model_picker: Option<ViewHandle<Dropdown<RunAgentsCardViewAction>>>,
     harness_picker: Option<ViewHandle<Dropdown<RunAgentsCardViewAction>>>,
     environment_picker: Option<ViewHandle<FilterableDropdown<RunAgentsCardViewAction>>>,
-    /// Text input for the worker host (e.g. "warp").
-    host_editor: Option<ViewHandle<EditorView>>,
+    host_picker: Option<ViewHandle<Dropdown<RunAgentsCardViewAction>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -228,6 +222,7 @@ pub enum RunAgentsCardViewAction {
     ModelChanged { model_id: String },
     HarnessChanged { harness_type: String },
     EnvironmentChanged { environment_id: String },
+    WorkerHostChanged { worker_host: String },
 }
 
 #[derive(Clone, Debug)]
@@ -548,7 +543,7 @@ impl RunAgentsCardView {
             let picker_styles_clone = picker_styles;
             let dropdown_handle = ctx.add_typed_action_view(move |ctx_dropdown| {
                 let mut dropdown = FilterableDropdown::<RunAgentsCardViewAction>::new(ctx_dropdown);
-                dropdown.set_use_overlay_layer(true, ctx_dropdown);
+                dropdown.set_use_overlay_layer(false, ctx_dropdown);
                 dropdown.set_main_axis_size(MainAxisSize::Max, ctx_dropdown);
                 dropdown.set_button_variant(ButtonVariant::Secondary);
                 dropdown.set_style(picker_styles_clone);
@@ -606,38 +601,47 @@ impl RunAgentsCardView {
             self.handles.environment_picker = Some(dropdown_handle);
         }
 
-        if self.handles.host_editor.is_none() {
+        if self.handles.host_picker.is_none() {
             let initial_host = match &state_snapshot.execution_mode {
                 RunAgentsExecutionMode::Remote { worker_host, .. } => worker_host.clone(),
                 RunAgentsExecutionMode::Local => RUN_AGENTS_WARP_WORKER_HOST.to_string(),
             };
-            let editor_handle = ctx.add_typed_action_view(move |ctx_editor| {
-                let appearance = Appearance::as_ref(ctx_editor);
-                let mut editor = EditorView::single_line(
-                    SingleLineEditorOptions {
-                        text: TextOptions::ui_text(Some(RUN_AGENTS_PICKER_FONT_SIZE), appearance),
-                        propagate_and_no_op_vertical_navigation_keys:
-                            PropagateAndNoOpNavigationKeys::Always,
-                        ..Default::default()
-                    },
-                    ctx_editor,
-                );
-                editor.set_buffer_text(&initial_host, ctx_editor);
-                editor.set_placeholder_text("Worker host", ctx_editor);
-                editor
-            });
-            ctx.subscribe_to_view(&editor_handle, |me, handle, event, ctx| match event {
-                EditorEvent::Edited(_) => {
-                    let text = handle.read(ctx, |editor, app| editor.buffer_text(app));
-                    me.state.set_worker_host(text);
-                    ctx.notify();
+            let dropdown_handle = Self::new_standard_picker_dropdown(
+                picker_padding,
+                picker_corner_radius,
+                picker_background_warpui,
+                picker_border_color_warpui,
+                picker_font_color,
+                ctx,
+            );
+            dropdown_handle.update(ctx, |dropdown, ctx_dropdown| {
+                let hosts: &[&str] = if matches!(ChannelState::channel(), Channel::Local) {
+                    &["warp", "local-dev"]
+                } else {
+                    &["warp"]
+                };
+                let mut items: Vec<MenuItem<DropdownAction<RunAgentsCardViewAction>>> = Vec::new();
+                let mut selected_idx = None;
+                for (idx, &host) in hosts.iter().enumerate() {
+                    let fields = MenuItemFields::new(host).with_on_select_action(
+                        DropdownAction::SelectActionAndClose(
+                            RunAgentsCardViewAction::WorkerHostChanged {
+                                worker_host: host.to_string(),
+                            },
+                        ),
+                    );
+                    if host.eq_ignore_ascii_case(&initial_host) {
+                        selected_idx = Some(idx);
+                    }
+                    items.push(MenuItem::Item(fields));
                 }
-                EditorEvent::Escape => {
-                    me.refocus_after_picker_close(ctx);
+                dropdown.set_rich_items(items, ctx_dropdown);
+                if let Some(idx) = selected_idx {
+                    dropdown.set_selected_by_index(idx, ctx_dropdown);
                 }
-                _ => {}
             });
-            self.handles.host_editor = Some(editor_handle);
+            Self::subscribe_picker_close(&dropdown_handle, ctx);
+            self.handles.host_picker = Some(dropdown_handle);
         }
 
         // Dropdown's internal selection display is unreliable in this
@@ -728,15 +732,13 @@ impl RunAgentsCardView {
                 }
             });
         }
-        if let Some(host_editor) = self.handles.host_editor.clone() {
+        if let Some(host_picker) = self.handles.host_picker.clone() {
             let worker_host = match &state.execution_mode {
                 RunAgentsExecutionMode::Remote { worker_host, .. } => worker_host.clone(),
                 RunAgentsExecutionMode::Local => RUN_AGENTS_WARP_WORKER_HOST.to_string(),
             };
-            host_editor.update(ctx, |editor, ctx_editor| {
-                if editor.buffer_text(ctx_editor) != worker_host {
-                    editor.set_buffer_text(&worker_host, ctx_editor);
-                }
+            host_picker.update(ctx, |dropdown, ctx_dropdown| {
+                dropdown.set_selected_by_name(&worker_host, ctx_dropdown);
             });
         }
     }
@@ -848,6 +850,10 @@ impl TypedActionView for RunAgentsCardView {
             RunAgentsCardViewAction::EnvironmentChanged { environment_id } => {
                 self.state.set_environment_id(environment_id.clone());
                 // See ModelChanged note.
+                ctx.notify();
+            }
+            RunAgentsCardViewAction::WorkerHostChanged { worker_host } => {
+                self.state.set_worker_host(worker_host.clone());
                 ctx.notify();
             }
         }
@@ -1184,34 +1190,10 @@ fn render_picker_row_quad(
         add_picker(
             &mut row,
             "Host",
-            handles.host_editor.as_ref().map(|editor| {
-                Container::new(
-                    ConstrainedBox::new(
-                        Container::new(
-                            Flex::column()
-                                .with_main_axis_alignment(MainAxisAlignment::Center)
-                                .with_main_axis_size(MainAxisSize::Max)
-                                .with_child(ChildView::new(editor).finish())
-                                .finish(),
-                        )
-                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(
-                            ORCHESTRATE_PICKER_RADIUS,
-                        )))
-                        .with_border(
-                            Border::all(RUN_AGENTS_PICKER_BORDER_WIDTH)
-                                .with_border_fill(Fill::Solid(ColorU::new(0x29, 0x29, 0x29, 0xff))),
-                        )
-                        .with_background(appearance.theme().surface_overlay_1())
-                        .with_horizontal_padding(12.)
-                        .finish(),
-                    )
-                    .with_height(RUN_AGENTS_PICKER_HEIGHT)
-                    .finish(),
-                )
-                .with_margin_top(DROPDOWN_PADDING)
-                .with_margin_bottom(DROPDOWN_PADDING)
-                .finish()
-            }),
+            handles
+                .host_picker
+                .as_ref()
+                .map(|p| ChildView::new(p).finish()),
         );
         add_picker(
             &mut row,
