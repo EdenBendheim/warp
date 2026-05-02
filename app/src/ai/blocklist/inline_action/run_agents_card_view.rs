@@ -470,6 +470,24 @@ impl RunAgentsCardView {
         self.spawning.is_some()
     }
 
+    /// Re-sync the edit state from a (potentially more complete)
+    /// streaming request. Called by `ensure_run_agents_card_view` on
+    /// every output update so that fields that arrive in later chunks
+    /// (summary, agent_run_configs, execution_mode, etc.) are picked
+    /// up even though the view was created on an earlier partial chunk.
+    /// Only updates if the editor is NOT open (user edits take
+    /// precedence over streamed data).
+    pub fn update_request(&mut self, request: &RunAgentsRequest, ctx: &mut ViewContext<Self>) {
+        if self.state.is_editor_open || self.spawning.is_some() {
+            return;
+        }
+        let new_state = RunAgentsEditState::from_request(request);
+        if self.state != new_state {
+            self.state = new_state;
+            ctx.notify();
+        }
+    }
+
     /// Drives the executor-backed Accept path. Validates the resolved
     /// request locally (the editor gates the Accept button via
     /// `accept_disabled_reason`; this is the defence-in-depth check

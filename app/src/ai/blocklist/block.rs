@@ -6445,7 +6445,14 @@ impl AIBlock {
         request: &RunAgentsRequest,
         ctx: &mut ViewContext<Self>,
     ) {
-        if self.run_agents_card_views.contains_key(action_id) {
+        if let Some(existing_view) = self.run_agents_card_views.get(action_id) {
+            // The view was created on an earlier streaming chunk that may
+            // have carried a partial/empty request. Re-sync the edit state
+            // from the latest (potentially more complete) request so the
+            // card renders the correct agent count, summary, etc.
+            existing_view.update(ctx, |view, ctx| {
+                view.update_request(request, ctx);
+            });
             return;
         }
         let action_id_clone = action_id.clone();
