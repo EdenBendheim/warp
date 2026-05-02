@@ -76,15 +76,6 @@ pub fn yellow_stop_icon(appearance: &Appearance) -> warpui::elements::Icon {
     )
 }
 
-/// Stop-filled icon for the orchestrate confirmation card header. P5.7:
-/// reuse the same theme-driven `yellow_stop_icon` (ANSI yellow) that the
-/// apply-diff card uses for its `WaitingForUser` state — keeps the
-/// confirmation icon consistent across tool-call cards and lets the
-/// theme drive the exact hue.
-pub fn run_agents_stop_icon(appearance: &Appearance) -> warpui::elements::Icon {
-    yellow_stop_icon(appearance)
-}
-
 /// To be used for actions (like running commands/reading files) that are long-running and executing.
 pub fn yellow_running_icon(appearance: &Appearance) -> warpui::elements::Icon {
     warpui::elements::Icon::new(

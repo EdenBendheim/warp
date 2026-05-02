@@ -82,12 +82,8 @@ fn convert_start_agent_v2_harness_type(
         .filter(|harness_type| !harness_type.trim().is_empty())
 }
 
-/// Maps the new proto `Harness` oneof to a client-side string identifier
-/// (e.g. "oz", "claude"). Returns `None` for an unset variant; an
-/// unrecognized variant maps to `"unknown"` (the same sentinel used for
-/// graceful display on read-only paths). The orchestration tool's
-/// resolved-harness path treats `None` and `"unknown"` identically: both
-/// fall through to an empty `harness_type` on the action.
+/// Maps the proto `Harness` oneof to a client-side string identifier
+/// (e.g. "oz", "claude"). Returns `None` for an unset variant.
 pub(crate) fn convert_run_agents_harness(harness: Option<&api::Harness>) -> Option<String> {
     let variant = harness?.variant.as_ref()?;
     Some(

@@ -768,7 +768,6 @@ impl RunAgentsCardView {
             // separately from the Dropdown helper.
             ctx.subscribe_to_view(&dropdown_handle, |me, _, event, ctx| {
                 if let FilterableDropdownEvent::Close = event {
-                    ctx.focus_self();
                     me.refocus_after_picker_close(ctx);
                 }
             });
@@ -822,7 +821,6 @@ impl RunAgentsCardView {
     ) {
         ctx.subscribe_to_view(dropdown_handle, move |me, _, event, ctx| {
             if let DropdownEvent::Close = event {
-                ctx.focus_self();
                 me.refocus_after_picker_close(ctx);
             }
         });
@@ -1051,7 +1049,7 @@ fn render_confirmation_card(
 fn render_header(handles: &RunAgentsCardHandles, app: &AppContext) -> Box<dyn Element> {
     let appearance = Appearance::as_ref(app);
     let mut config = HeaderConfig::new(RUN_AGENTS_CARD_TITLE, app)
-        .with_icon(icons::run_agents_stop_icon(appearance))
+        .with_icon(icons::yellow_stop_icon(appearance))
         .with_corner_radius_override(CornerRadius::with_top(Radius::Pixels(8.)));
 
     if let (Some(reject), Some(edit), Some(accept)) = (

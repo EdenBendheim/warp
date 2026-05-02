@@ -16,16 +16,8 @@ use warp_core::features::FeatureFlag;
 
 use super::{ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput};
 
-/// Outcome the executor surfaces back to a caller awaiting a single
-/// StartAgent request. Internal to this module historically; made `pub` so
-/// the orchestrate Accept fan-out (which dispatches N requests in
-/// parallel and `join_all`s their receivers) can reason about the result
-/// for each child without going through the action-model `on_complete`
-/// machinery.
-///
-/// `Cancelled` is reserved for callers; the existing `execute()` path
-/// continues to map a dropped receiver to
-/// [`StartAgentResult::Cancelled`] via its `on_complete` closure.
+/// Per-request outcome surfaced to callers awaiting a StartAgent dispatch.
+/// Used by the RunAgents fan-out to collect per-child results.
 #[derive(Debug, Clone)]
 pub enum StartAgentOutcome {
     /// The child conversation was created successfully and the server
@@ -46,15 +38,9 @@ fn invalid_local_child_harness_error(harness_type: &str) -> String {
 
 /// Opaque, monotonically increasing identifier minted by
 /// [`StartAgentExecutor::execute`] for each in-flight StartAgent request.
-///
-/// Embedded in [`StartAgentRequest`] so the executor can disambiguate
-/// per-request side effects when multiple requests are in flight in
-/// parallel (e.g. the orchestrate Accept fan-out spawns N concurrent
-/// StartAgents that all share the same `parent_conversation_id`). The
-/// terminal pane echoes this id back via
-/// [`StartAgentExecutor::record_child_conversation`] once the synchronously-
-/// created child conversation id is known, replacing the previous
-/// `parent_conversation_id`-only matching heuristic.
+/// Disambiguates per-request side effects when multiple requests are in
+/// flight in parallel (e.g. the RunAgents fan-out spawns N concurrent
+/// StartAgents that all share the same `parent_conversation_id`).
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Default)]
 pub struct StartAgentRequestId(u64);
 
@@ -72,9 +58,8 @@ impl StartAgentRequestId {
 /// executor through the terminal view and pane group into the controller.
 #[derive(Clone)]
 pub struct StartAgentRequest {
-    /// Executor-minted request identifier. Plumbed back through
-    /// [`StartAgentExecutor::record_child_conversation`] so per-request
-    /// pendings are disambiguated when N requests run in parallel.
+    /// Executor-minted request identifier for disambiguating per-request
+    /// pendings when N requests run in parallel.
     pub id: StartAgentRequestId,
     pub name: String,
     pub prompt: String,
@@ -99,8 +84,8 @@ struct PendingStartAgent {
 pub struct StartAgentExecutor {
     /// In-flight StartAgent requests keyed by their executor-minted id.
     /// Multiple entries can be live concurrently when callers fan out
-    /// (orchestrate Accept). Dropped synchronously when the request reaches
-    /// a terminal `StartAgentDecision`.
+    /// (RunAgents Accept). Dropped synchronously when the request reaches
+    /// a terminal `StartAgentOutcome`.
     pending: HashMap<StartAgentRequestId, PendingStartAgent>,
     next_request_id: u64,
 }
