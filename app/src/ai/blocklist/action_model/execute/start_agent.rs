@@ -16,13 +16,12 @@ use warp_core::features::FeatureFlag;
 
 use super::{ActionExecution, AnyActionExecution, ExecuteActionInput, PreprocessActionInput};
 
-/// Per-request outcome surfaced to callers awaiting a StartAgent dispatch.
-/// Used by the RunAgents fan-out to collect per-child results.
+/// Per-request outcome of a StartAgent dispatch.
 #[derive(Debug, Clone)]
 pub enum StartAgentOutcome {
-    /// The child conversation was created successfully and the server
-    /// assigned an orchestration agent id.
-    Started { agent_id: String },
+    Started {
+        agent_id: String,
+    },
     /// An error occurred while starting the agent.
     Error(String),
 }
@@ -36,30 +35,20 @@ fn invalid_local_child_harness_error(harness_type: &str) -> String {
     }
 }
 
-/// Opaque, monotonically increasing identifier minted by
-/// [`StartAgentExecutor::execute`] for each in-flight StartAgent request.
-/// Disambiguates per-request side effects when multiple requests are in
-/// flight in parallel (e.g. the RunAgents fan-out spawns N concurrent
-/// StartAgents that all share the same `parent_conversation_id`).
+/// Opaque, monotonically increasing request identifier.
+/// Disambiguates parallel in-flight StartAgent requests.
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Default)]
 pub struct StartAgentRequestId(u64);
 
 impl StartAgentRequestId {
-    /// Convenience constructor for tests that need to supply a fixed id
-    /// outside the executor's monotonic counter. `const fn` so callers
-    /// can declare module-level `const`s without going through `lazy_static`.
     #[cfg(test)]
     pub const fn from_raw_for_test(value: u64) -> Self {
         Self(value)
     }
 }
 
-/// Groups the data for a single StartAgent invocation as it flows from the
-/// executor through the terminal view and pane group into the controller.
 #[derive(Clone)]
 pub struct StartAgentRequest {
-    /// Executor-minted request identifier for disambiguating per-request
-    /// pendings when N requests run in parallel.
     pub id: StartAgentRequestId,
     pub name: String,
     pub prompt: String,
@@ -69,23 +58,14 @@ pub struct StartAgentRequest {
     pub parent_run_id: Option<String>,
 }
 
-/// Tracks a single in-flight StartAgent action.
 struct PendingStartAgent {
     parent_conversation_id: AIConversationId,
-    /// Set when the terminal pane finishes synchronously creating the
-    /// child conversation (via
-    /// [`StartAgentExecutor::record_child_conversation`]). Until that
-    /// happens, this stays `None` so history events targeting the child
-    /// can be ignored for this pending.
+    /// Set once the child conversation is synchronously created.
     child_conversation_id: Option<AIConversationId>,
     sender: async_channel::Sender<StartAgentOutcome>,
 }
 
 pub struct StartAgentExecutor {
-    /// In-flight StartAgent requests keyed by their executor-minted id.
-    /// Multiple entries can be live concurrently when callers fan out
-    /// (RunAgents Accept). Dropped synchronously when the request reaches
-    /// a terminal `StartAgentOutcome`.
     pending: HashMap<StartAgentRequestId, PendingStartAgent>,
     next_request_id: u64,
 }
@@ -101,22 +81,14 @@ impl StartAgentExecutor {
         }
     }
 
-    /// Returns the next monotonic request id, advancing the internal
-    /// counter. Wraps on overflow (practically unreachable; reuse is
-    /// harmless because the counter overflows long after every prior
-    /// pending has resolved).
     fn next_request_id(&mut self) -> StartAgentRequestId {
         let id = self.next_request_id;
         self.next_request_id = self.next_request_id.wrapping_add(1);
         StartAgentRequestId(id)
     }
 
-    /// Records the synchronously-created child conversation id for a
-    /// pending request. Called when
-    /// [`BlocklistAIHistoryEvent::NewConversationRequestComplete`] arrives;
-    /// subsequent `ConversationServerTokenAssigned` /
-    /// `UpdatedConversationStatus` history events use this id to find the
-    /// matching pending.
+    /// Links a pending request to its freshly-created child
+    /// conversation so subsequent history events can find it.
     fn record_child_conversation(
         &mut self,
         request_id: StartAgentRequestId,
@@ -127,10 +99,6 @@ impl StartAgentExecutor {
         }
     }
 
-    /// Finds the pending request id whose recorded
-    /// `child_conversation_id` matches the supplied id, if any. Returns
-    /// the `StartAgentRequestId` so the caller can `pending.remove(&id)`
-    /// and consume the entry by value.
     fn find_pending_by_child(
         &self,
         child_conversation_id: &AIConversationId,
@@ -152,7 +120,6 @@ impl StartAgentExecutor {
                 let Some(request_id) = self.find_pending_by_child(conversation_id) else {
                     return;
                 };
-                // Safe to unwrap: `find_pending_by_child` returned the id.
                 let pending = self.pending.remove(&request_id).unwrap();
                 let agent_id = BlocklistAIHistoryModel::as_ref(ctx)
                     .conversation(conversation_id)
@@ -462,18 +429,8 @@ impl StartAgentExecutor {
         })
     }
 
-    /// Public dispatch entrypoint for callers that already have a fully-built
-    /// `StartAgentExecutionMode` and have done their own validation (e.g.
-    /// the orchestrate Accept fan-out, which validates the user-edited
-    /// configuration in the confirmation card before reaching the
-    /// executor).
-    ///
-    /// Mints a fresh [`StartAgentRequestId`], inserts a pending entry
-    /// keyed by it, emits [`StartAgentExecutorEvent::CreateAgent`] so the
-    /// pane group can stand up the child pane, and returns the receiver
-    /// the caller awaits to learn the per-request [`StartAgentOutcome`].
-    /// The history-event handler completes the receiver (Started / Error)
-    /// via the same reservation flow used by [`Self::execute`].
+    /// Dispatch a pre-validated StartAgent request. Returns a receiver
+    /// for the resulting [`StartAgentOutcome`].
     #[allow(clippy::too_many_arguments)]
     pub fn dispatch(
         &mut self,

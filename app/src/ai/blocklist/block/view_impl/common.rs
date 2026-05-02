@@ -246,10 +246,6 @@ pub fn render_warping_indicator<V: View>(
         })
     });
 
-    // Round 7 #1: while an `orchestrate` tool call is mid-stream, the
-    // confirmation card is hidden (see `view_impl::output` gate).
-    // Surface a per-tool "Spawning agents..." message in the streaming
-    // status row instead of the generic "Warping...".
     let is_last_message_run_agents = output_to_render.as_ref().is_some_and(|output| {
         let output = output.get();
         output.messages.last().is_some_and(|m| {

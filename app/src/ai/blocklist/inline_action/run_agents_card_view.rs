@@ -1,42 +1,8 @@
-//! Inline view for the orchestrate (`RunAgents`) tool call.
+//! Inline view for the orchestrate (`RunAgents`) confirmation card.
 //!
-//! Mirrors the pattern used by `code_diff_view`: a real `View` with its
-//! own keymap context and `TypedActionView`, embedded by `AIBlock` via
-//! `ChildView` rather than rendered through inline free functions. The
-//! view owns all per-card state (edit state, button + picker handles,
-//! in-flight dispatch snapshot) and is keyed by `AIAgentActionId` so
-//! multiple cards can coexist on one `AIBlock`.
-//!
-//! ## Architectural notes
-//!
-//! * **Keybindings live on the view, not the block.** `pub fn init`
-//!   registers the orchestrate-card-scoped FixedBindings predicated on
-//!   `id!(RunAgentsCardView::ui_name())`. They only resolve while a card
-//!   view is in the focus chain, so we don't need a global
-//!   "RUN_AGENTS_EDITOR_OPEN" context flag on the parent `AIBlock`.
-//!   `keymap_context` inserts a per-view flag (`RUN_AGENTS_EDITOR_OPEN`)
-//!   when this card's editor is open so the `escape` binding only fires
-//!   on cards that actually have an editor to discard.
-//! * **Accept dispatch lives on the view.** On Accept, the view reads
-//!   its own resolved [`RunAgentsRequest`] (with any user edits),
-//!   gates on validation, and calls
-//!   [`BlocklistAIActionModel::execute_run_agents`] — which in turn
-//!   drives [`RunAgentsExecutor::dispatch_run_agents`]. The view does
-//!   not need to surface an `AcceptRequested` event back to its
-//!   parent; only `RejectRequested` remains, since rejection still
-//!   uses `AIBlock::cancel_action` for parity with the other inline
-//!   action views.
-//! * **Spawning snapshot is event-driven.** The view subscribes to
-//!   [`RunAgentsExecutorEvent::SpawningStarted`] /
-//!   [`RunAgentsExecutorEvent::SpawningFinished`] and updates its
-//!   internal `spawning: Option<RunAgentsSpawningSnapshot>` from the
-//!   executor's authoritative lifecycle. The presence of the snapshot
-//!   sources the in-flight "Spawning N agents…" card, while the
-//!   executor's own `pending` table is the canonical idempotency
-//!   guard.
-//!
-//! Spec references: TECH.md §8, §9; PRODUCT.md "Confirmation card",
-//! "Post-action card states", "Invariants".
+//! Each card is a `View` keyed by `AIAgentActionId`, embedded by
+//! `AIBlock` via `ChildView`. Keybindings and Accept dispatch live on
+//! the view; only `RejectRequested` flows back to the parent.
 use ai::agent::action::{RunAgentsAgentRunConfig, RunAgentsExecutionMode, RunAgentsRequest};
 use ai::agent::action_result::{RunAgentsAgentOutcomeKind, RunAgentsResult};
 use ai::skills::SkillReference;
@@ -90,33 +56,14 @@ use crate::view_components::dropdown::{Dropdown, DropdownAction, DropdownEvent, 
 use crate::view_components::{FilterableDropdown, FilterableDropdownEvent};
 use crate::LLMPreferences;
 
-/// Round 6 follow-up B3: canonical worker-host value (lowercase) used
-/// throughout the orchestrate edit state. The recommendation copy in
-/// `render_editor` is gated on this so non-Warp hosts — where the
-/// environment concept doesn't apply — don't surface the recommendation.
 const RUN_AGENTS_WARP_WORKER_HOST: &str = "warp";
 
-/// Static title rendered in the orchestrate confirmation card header.
-/// Per spec §8 this is invariant client copy; the LLM-supplied
-/// `summary` field is repurposed as the body description.
 const RUN_AGENTS_CARD_TITLE: &str = "Can I add additional agents to this task?";
 
-/// Display label for the synthetic "(no environment)" item at the top
-/// of the Cloud-mode environment picker. Selecting this item dispatches
-/// `EnvironmentChanged` with an empty `environment_id`, which clears
-/// any previously chosen environment.
 const RUN_AGENTS_ENV_NONE_LABEL: &str = "(no environment)";
 
-/// Per-view keymap context flag set when this card's inline editor is
-/// open. Gates the `escape` binding so it only fires when the editor is
-/// actually open and doesn't shadow Esc elsewhere.
 const RUN_AGENTS_EDITOR_OPEN: &str = "RunAgentsEditorOpen";
 
-/// Registers orchestrate-card-scoped keybindings. Mirrors the
-/// `code_diff_view::init` pattern: bindings are scoped to the view's
-/// `ui_name()` so they only fire while the focused view is a
-/// `RunAgentsCardView`. Per-view keymap state (e.g. is-editor-open)
-/// further gates the `escape` binding.
 pub fn init(app: &mut AppContext) {
     use warpui::keymap::macros::*;
 
@@ -136,10 +83,7 @@ pub fn init(app: &mut AppContext) {
             RunAgentsCardViewAction::ToggleEdit,
             id!(RunAgentsCardView::ui_name()),
         ),
-        // Esc only fires when this card's editor is open (gated by the
-        // per-view `RUN_AGENTS_EDITOR_OPEN` flag inserted by
-        // `keymap_context`). Reject's documented shortcut is `Ctrl-C`,
-        // not Esc.
+        // Esc closes the editor; Reject is Ctrl-C.
         FixedBinding::new(
             "escape",
             RunAgentsCardViewAction::DiscardEdits,
@@ -148,40 +92,17 @@ pub fn init(app: &mut AppContext) {
     ]);
 }
 
-// ---------------------------------------------------------------------------
-// State structs
-// ---------------------------------------------------------------------------
-
-/// Per-action edit state for the `orchestrate` tool call's inline
-/// confirmation card. Updated in response to picker actions while the
-/// editor is open.
-///
-/// Spec references: TECH.md §8 ("Client: confirmation card"),
-/// PRODUCT.md "Confirmation card actions".
+/// Per-action edit state for the orchestrate confirmation card.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunAgentsEditState {
-    /// Whether the inline editor is currently visible. Toggled by the
-    /// Edit button.
     pub is_editor_open: bool,
-    /// Currently-selected model_id for run-wide config. Initialized
-    /// from the LLM-supplied `RunAgentsRequest.model_id`.
     pub model_id: String,
-    /// Currently-selected harness_type. Initialized from the
-    /// LLM-supplied `RunAgentsRequest.harness_type`.
     pub harness_type: String,
-    /// Currently-selected execution mode (Local or Remote{env, host, ...}).
     pub execution_mode: RunAgentsExecutionMode,
-    /// Per-agent run configs (passed straight through; not
-    /// user-editable in Stage 1).
     pub agent_run_configs: Vec<RunAgentsAgentRunConfig>,
-    /// Run-wide base prompt (passed through verbatim).
     pub base_prompt: String,
-    /// Summary text rendered in the title row.
     pub summary: String,
-    /// Run-wide skills (passed through verbatim per PRODUCT.md
-    /// "Skills and base prompt are passed through verbatim and not
-    /// displayed"). Propagated to each child's
-    /// `StartAgentExecutionMode::Remote.skill_references` at dispatch.
+    /// Run-wide skills propagated to each child at dispatch.
     pub skills: Vec<SkillReference>,
 }
 
@@ -199,18 +120,14 @@ impl RunAgentsEditState {
         }
     }
 
-    /// Toggle Local <-> Cloud. Per spec §8, OpenCode harness is not
-    /// supported on Cloud; toggling Local→Cloud while OpenCode is
-    /// selected resets the harness to Oz.
+    /// Toggle Local <-> Cloud. Resets OpenCode to Oz when switching
+    /// to Cloud (unsupported combination).
     pub fn toggle_execution_mode_to_remote(&mut self, is_remote: bool) {
         if is_remote {
-            // Local → Cloud: reset OpenCode to Oz per spec.
             if self.harness_type.eq_ignore_ascii_case("opencode") {
                 self.harness_type = "oz".to_string();
             }
-            // Initialize Remote with default empty fields and
-            // worker_host="warp" (TODO(QUALITY-569 fast-follow): expose
-            // worker_host as an editable picker).
+            // TODO(QUALITY-569): expose worker_host as an editable picker.
             if !self.execution_mode.is_remote() {
                 self.execution_mode = RunAgentsExecutionMode::Remote {
                     environment_id: String::new(),
@@ -232,11 +149,8 @@ impl RunAgentsEditState {
         }
     }
 
-    /// Returns Some(reason) if Accept must be disabled, None if it's
-    /// enabled. Round 6 follow-up: Cloud-without-env is no longer a
-    /// hard block — it's now a soft recommendation rendered in
-    /// `render_editor`. The remaining hard block is OpenCode+Cloud,
-    /// which is unsupported per spec §8.
+    /// Returns `Some(reason)` if Accept must be disabled.
+    /// Only hard block: OpenCode+Cloud.
     pub fn accept_disabled_reason(&self) -> Option<&'static str> {
         match &self.execution_mode {
             RunAgentsExecutionMode::Remote { .. }
@@ -263,15 +177,8 @@ impl RunAgentsEditState {
     }
 }
 
-/// Per-action UI handles for the `orchestrate` confirmation card.
-///
-/// Holds the `CompactibleActionButton` views for Reject and Edit, the
-/// `CompactibleSplitActionButton` for Accept, `MouseStateHandle`s for
-/// the Local/Cloud toggle inside the inline editor, and the
-/// lazily-created picker `ViewHandle`s for the inline editor
-/// (model/harness `Dropdown`s and a filterable env
-/// `FilterableDropdown`). Each picker field is `Option<...>` so the
-/// pickers stay un-built until the user first opens the editor.
+/// Per-action UI handles. Picker views are lazily created on first
+/// editor open.
 #[derive(Default, Clone)]
 struct RunAgentsCardHandles {
     reject_button: Option<CompactibleActionButton>,
@@ -282,61 +189,26 @@ struct RunAgentsCardHandles {
     model_picker: Option<ViewHandle<Dropdown<RunAgentsCardViewAction>>>,
     harness_picker: Option<ViewHandle<Dropdown<RunAgentsCardViewAction>>>,
     environment_picker: Option<ViewHandle<FilterableDropdown<RunAgentsCardViewAction>>>,
-    /// Visual-only host picker (currently always "Warp"). The picker is
-    /// non-functional today — the worker host is fixed at `"warp"` and
-    /// editing it is a fast-follow per spec. Constructing it as a real
-    /// `Dropdown` keeps the four-column editor layout consistent with
-    /// Figma node 4340:117057.
+    /// Visual-only host picker (currently always "Warp").
     host_picker: Option<ViewHandle<Dropdown<RunAgentsCardViewAction>>>,
 }
 
-// ---------------------------------------------------------------------------
-// Action / Event enums
-// ---------------------------------------------------------------------------
-
-/// View-level interactions for the orchestrate confirmation card.
-///
-/// Each card view dispatches these against itself; focus determines
-/// which card receives keyboard-bound actions, replacing the older
-/// `*CurrentCard` action variants that walked the action-model to
-/// resolve a target.
 #[derive(Clone, Debug)]
 pub enum RunAgentsCardViewAction {
-    /// User accepted the card. Drives
-    /// [`BlocklistAIActionModel::execute_run_agents`] inline using
-    /// the view's resolved (post-edit) request.
     Accept,
-    /// User rejected the card. Emits `RunAgentsCardViewEvent::RejectRequested`
-    /// so the parent `AIBlock` can call `cancel_action`.
     Reject,
-    /// Open or close the inline editor. Lazily builds the picker views
-    /// the first time the editor is opened.
     ToggleEdit,
-    /// Close the inline editor (gated by `RUN_AGENTS_EDITOR_OPEN`).
-    /// Equivalent to `ToggleEdit` when the editor is already open.
     DiscardEdits,
-    /// User flipped the Local/Cloud segmented control.
     ExecutionModeToggled { is_remote: bool },
-    /// User selected a different base model in the inline editor.
     ModelChanged { model_id: String },
-    /// User selected a different harness in the inline editor.
     HarnessChanged { harness_type: String },
-    /// User selected a different environment_id (or "(no environment)"
-    /// for an empty value).
     EnvironmentChanged { environment_id: String },
 }
 
-/// Events surfaced to `AIBlock` so it can run the cross-cutting flows
-/// that still live on the parent (cancellation).
 #[derive(Clone, Debug)]
 pub enum RunAgentsCardViewEvent {
-    /// The user rejected this card. Parent should cancel the action.
     RejectRequested,
 }
-
-// ---------------------------------------------------------------------------
-// View
-// ---------------------------------------------------------------------------
 
 pub struct RunAgentsCardView {
     action_id: AIAgentActionId,
@@ -344,19 +216,10 @@ pub struct RunAgentsCardView {
     handles: RunAgentsCardHandles,
     spawning: Option<RunAgentsSpawningSnapshot>,
 
-    // Plumbed handles. We store these on the view so dispatch handlers
-    // can mutate the action model and read the live block model
-    // without going through the parent.
     action_model: ModelHandle<BlocklistAIActionModel>,
     block_model: Rc<dyn AIBlockModel<View = AIBlock>>,
 }
 
-/// Shorthand for `eq_ignore_ascii_case("opencode")` used by the
-/// view's local pre-flight Accept gate. The executor enforces the
-/// same rule defensively in [`RunAgentsExecutor::dispatch_run_agents`];
-/// this version exists so the view can short-circuit before bothering
-/// the action model when an Enter keypress bypasses the editor's
-/// disabled-button gate (`accept_disabled_reason`).
 fn is_opencode_on_remote(request: &RunAgentsRequest) -> bool {
     matches!(
         request.execution_mode,
@@ -365,13 +228,6 @@ fn is_opencode_on_remote(request: &RunAgentsRequest) -> bool {
 }
 
 impl RunAgentsCardView {
-    /// Construct a new card view from the streamed `RunAgentsRequest`.
-    /// Eagerly builds the Reject / Edit / Accept buttons so the card
-    /// can render them on its first frame; pickers stay lazy until the
-    /// user opens the editor. Subscribes to
-    /// [`RunAgentsExecutorEvent`] so the view's in-flight
-    /// `spawning` state stays in sync with the executor's
-    /// authoritative dispatch lifecycle.
     pub fn new(
         action_id: AIAgentActionId,
         request: &RunAgentsRequest,
@@ -380,20 +236,11 @@ impl RunAgentsCardView {
         block_model: Rc<dyn AIBlockModel<View = AIBlock>>,
         ctx: &mut ViewContext<Self>,
     ) -> Self {
-        // Reject defaults to Ctrl-C (rendered as `⌃C` on Mac, `Ctrl C`
-        // elsewhere). When the inline editor is open the Edit button
-        // label/keystroke swaps to "Discard edits" / Esc via
-        // `sync_card_buttons`.
         let reject_keystroke = CTRL_C_KEYSTROKE.clone();
         let edit_keystroke =
             Keystroke::parse("cmdorctrl-e").expect("orchestrate edit keystroke literal must parse");
         let accept_keystroke = ENTER_KEYSTROKE.clone();
 
-        // Round 7: use `ButtonSize::Small` to match apply-diff's
-        // Reject/Edit/Accept buttons exactly. The card itself is
-        // hidden during streaming via the `is_streaming` gate in
-        // `view_impl::output`, so per-button disabled-state plumbing
-        // is unnecessary.
         let reject_button = CompactibleActionButton::new(
             "Reject".to_string(),
             Some(KeystrokeSource::Fixed(reject_keystroke)),
@@ -412,9 +259,7 @@ impl RunAgentsCardView {
             std::sync::Arc::new(NakedTheme),
             ctx,
         );
-        // The chevron-down split-button affordance is visual-only per
-        // the Figma; both the primary click and the chevron click route
-        // to `Accept`.
+        // Both primary and chevron click route to Accept.
         let accept_button = CompactibleSplitActionButton::new(
             "Accept".to_string(),
             Some(KeystrokeSource::Fixed(accept_keystroke)),
@@ -461,22 +306,12 @@ impl RunAgentsCardView {
         }
     }
 
-    /// Returns true when this card is currently mid-dispatch (a
-    /// [`RunAgentsExecutorEvent::SpawningStarted`] has fired and
-    /// `SpawningFinished` has not yet). The view-impl renderer reads
-    /// this to keep the card in the output column while a dispatch is
-    /// in-flight even after the parent block has stopped streaming.
     pub fn is_spawning(&self) -> bool {
         self.spawning.is_some()
     }
 
-    /// Re-sync the edit state from a (potentially more complete)
-    /// streaming request. Called by `ensure_run_agents_card_view` on
-    /// every output update so that fields that arrive in later chunks
-    /// (summary, agent_run_configs, execution_mode, etc.) are picked
-    /// up even though the view was created on an earlier partial chunk.
-    /// Only updates if the editor is NOT open (user edits take
-    /// precedence over streamed data).
+    /// Re-sync edit state from the latest streaming request.
+    /// No-op when the editor is open (user edits take precedence).
     pub fn update_request(&mut self, request: &RunAgentsRequest, ctx: &mut ViewContext<Self>) {
         if self.state.is_editor_open || self.spawning.is_some() {
             return;
@@ -488,16 +323,7 @@ impl RunAgentsCardView {
         }
     }
 
-    /// Drives the executor-backed Accept path. Validates the resolved
-    /// request locally (the editor gates the Accept button via
-    /// `accept_disabled_reason`; this is the defence-in-depth check
-    /// for paths that bypass the button) and forwards the request to
-    /// [`BlocklistAIActionModel::execute_run_agents`].
-    ///
-    /// Public so that the parent `AIBlock` can route an Enter
-    /// keypress that arrived while focus was on the block (and not
-    /// the card) into the same dispatch path the card's own Accept
-    /// keybinding uses.
+    /// Validates and dispatches the resolved request.
     pub fn accept(&mut self, ctx: &mut ViewContext<Self>) {
         self.handle_accept(ctx);
     }
@@ -513,9 +339,7 @@ impl RunAgentsCardView {
             );
             return;
         }
-        // Close the editor before dispatching so the card renders the
-        // spawning state on the next frame rather than keeping the
-        // editor visible until the SpawningStarted event arrives.
+        // Close the editor before dispatching.
         if self.state.is_editor_open {
             self.state.is_editor_open = false;
             self.sync_card_buttons(ctx);
@@ -529,27 +353,16 @@ impl RunAgentsCardView {
     fn handle_toggle_edit(&mut self, ctx: &mut ViewContext<Self>) {
         self.state.is_editor_open = !self.state.is_editor_open;
 
-        // Lazily build the model/harness/environment picker views the
-        // first time the editor is opened. Building them here (rather
-        // than at view construction) avoids spinning up dropdown
-        // entities for cards the user never edits, and keeps the
-        // picker views alive across editor toggles so their internal
-        // selection/focus state is preserved.
+        // Lazily build picker views on first editor open.
         if self.state.is_editor_open {
             self.ensure_pickers(ctx);
         }
 
-        // Swap Reject ↔ Discard-edits label + shortcut chip based on
-        // whether the editor is open.
         self.sync_card_buttons(ctx);
         ctx.notify();
     }
 
-    /// Update the Edit button label/keystroke to reflect the current
-    /// `RunAgentsEditState`. Per Figma 4340:117057, when the inline
-    /// editor is open the Edit button becomes "Discard edits" with
-    /// an `Esc` shortcut chip; closed, it reverts to "Edit" with
-    /// `Cmd/Ctrl-E`.
+    /// Swap Edit ↔ "Discard edits" label/keystroke.
     fn sync_card_buttons(&mut self, ctx: &mut ViewContext<Self>) {
         let Some(edit_button) = self.handles.edit_button.as_mut() else {
             return;
@@ -571,16 +384,9 @@ impl RunAgentsCardView {
         edit_button.set_keybinding(Some(KeystrokeSource::Fixed(keystroke)), ctx);
     }
 
-    /// Lazily construct the model/harness/environment dropdown views.
-    /// Idempotent: re-running this with already-populated handles is a
-    /// no-op for those entries.
+    /// Lazily construct the picker dropdown views (idempotent).
     fn ensure_pickers(&mut self, ctx: &mut ViewContext<Self>) {
-        // Figma orchestrate inline-editor picker styling helpers (node
-        // 4340:117057). Per the design, each dropdown shares the same
-        // 36px-tall pill-styled top bar regardless of which dropdown
-        // type backs it; centralising the values here avoids drift
-        // between Dropdown<RunAgentsCardViewAction> and
-        // FilterableDropdown<...>.
+        // Shared picker styling.
         const RUN_AGENTS_PICKER_HEIGHT: f32 = 36.;
         const ORCHESTRATE_PICKER_RADIUS: f32 = 4.;
         const RUN_AGENTS_PICKER_BORDER_WIDTH: f32 = 1.;
@@ -754,9 +560,6 @@ impl RunAgentsCardView {
                         "Environment: loading\u{2026}".to_string()
                     });
                 }
-                // Round 6 follow-up B1: prepend a "(no environment)"
-                // item so the user can deselect a previously chosen
-                // environment and revert to the empty-env state.
                 items.push(MenuItem::Item(
                     MenuItemFields::new(RUN_AGENTS_ENV_NONE_LABEL).with_on_select_action(
                         DropdownAction::SelectActionAndClose(
@@ -789,8 +592,6 @@ impl RunAgentsCardView {
                     dropdown.set_selected_by_name(&name, ctx_dropdown);
                 }
             });
-            // FilterableDropdown variant; subscribe to its Close event
-            // separately from the Dropdown helper.
             ctx.subscribe_to_view(&dropdown_handle, |me, _, event, ctx| {
                 if let FilterableDropdownEvent::Close = event {
                     me.refocus_after_picker_close(ctx);
@@ -820,9 +621,7 @@ impl RunAgentsCardView {
                 dropdown
             });
             dropdown_handle.update(ctx, |dropdown, ctx_dropdown| {
-                // Visual-only Host picker. The lone "Warp" item has no
-                // `on_select_action`, so clicking it just closes the
-                // menu without dispatching anything.
+                // Visual-only; clicking just closes the menu.
                 let item = MenuItemFields::new("Warp".to_string());
                 dropdown.set_rich_items(vec![MenuItem::Item(item)], ctx_dropdown);
                 dropdown.set_selected_by_index(0, ctx_dropdown);
@@ -831,12 +630,8 @@ impl RunAgentsCardView {
             self.handles.host_picker = Some(dropdown_handle);
         }
 
-        // Force the picker top-bar labels to reflect the current state.
-        // The Dropdown's internal `MenuEvent::ItemSelected`
-        // subscription is unreliable inside this view tree (the top-bar
-        // text stays blank even after the menu's selected_row_index is
-        // set), so we explicitly drive the displayed selection here and
-        // again after every state-mutating action.
+        // Dropdown's internal selection display is unreliable in this
+        // view tree, so we explicitly drive it.
         self.sync_picker_selections(ctx);
     }
 
@@ -851,18 +646,11 @@ impl RunAgentsCardView {
         });
     }
 
-    /// Restore focus to the card view after a picker dropdown closes.
-    /// Without this, focus is left on the now-hidden Dropdown view and
-    /// the card's own keymap context (e.g. the `enter → Accept`
-    /// binding) no longer resolves.
+    /// Restore focus after a picker dropdown closes.
     fn refocus_after_picker_close(&self, ctx: &mut ViewContext<Self>) {
         ctx.focus_self();
     }
 
-    /// Re-sync each picker's displayed selection with the authoritative
-    /// `RunAgentsEditState`. Called after creating the pickers and
-    /// after every state-mutating action so the top-bar label always
-    /// matches the underlying state.
     fn sync_picker_selections(&mut self, ctx: &mut ViewContext<Self>) {
         let state = self.state.clone();
         if let Some(model_picker) = self.handles.model_picker.clone() {
@@ -938,12 +726,8 @@ impl View for RunAgentsCardView {
             return Empty::new().finish();
         }
 
-        // In-flight: the user has accepted the orchestrate card and
-        // the async dispatch batch is running. Render the "Spawning N
-        // agents…" card. We check both `self.spawning` (set by the
-        // executor's SpawningStarted event) and the action status
-        // (RunningAsync, set synchronously by execute_run_agents)
-        // because the event arrives one tick after the status change.
+        // In-flight dispatch: check both spawning snapshot and action
+        // status because the event arrives one tick after the status.
         if let Some(snapshot) = &self.spawning {
             return render_spawning_card(snapshot, appearance, app);
         }
@@ -954,12 +738,8 @@ impl View for RunAgentsCardView {
             return render_spawning_card(&snapshot, appearance, app);
         }
 
-        // Restored-from-history but not finished: there's no point in
-        // showing an interactive confirmation card because the
-        // action's pending dispatch state has been lost on restore.
-        // Render as Cancelled, mirroring how `set_restored_file_edits`
-        // on the apply-diff tool call marks restored-pending edits as
-        // Rejected.
+        // Restored-from-history: dispatch state is lost, render as
+        // Cancelled.
         if self.block_model.is_restored() {
             return render_status_only_card(
                 "Spawn agents cancelled".to_string(),
@@ -1003,43 +783,29 @@ impl TypedActionView for RunAgentsCardView {
             }
             RunAgentsCardViewAction::ExecutionModeToggled { is_remote } => {
                 self.state.toggle_execution_mode_to_remote(*is_remote);
-                // The Local→Cloud transition can programmatically
-                // reset OpenCode→Oz; keep the harness dropdown's
-                // display in sync with that change so the user sees
-                // the active harness.
+                // Local→Cloud may reset OpenCode→Oz; sync pickers.
                 self.sync_picker_selections(ctx);
                 ctx.notify();
             }
             RunAgentsCardViewAction::ModelChanged { model_id } => {
                 self.state.model_id = model_id.clone();
-                // Note: do NOT call `sync_picker_selections` here.
-                // This action is dispatched synchronously from the
-                // model_picker dropdown's `select_action_and_close`
-                // while its `update_view` is mid-execution; calling
-                // `model_picker.update(...)` from this handler would
-                // panic with "Circular view update". The dropdown's
-                // own `MenuEvent::ItemSelected` subscription updates
-                // the displayed selection after the dispatch chain
-                // unwinds.
+                // Do NOT call sync_picker_selections here — this runs
+                // mid-update and would cause a circular view update.
                 ctx.notify();
             }
             RunAgentsCardViewAction::HarnessChanged { harness_type } => {
                 self.state.harness_type = harness_type.clone();
-                // See note on ModelChanged above.
+                // See ModelChanged note.
                 ctx.notify();
             }
             RunAgentsCardViewAction::EnvironmentChanged { environment_id } => {
                 self.state.set_environment_id(environment_id.clone());
-                // See note on ModelChanged above.
+                // See ModelChanged note.
                 ctx.notify();
             }
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Free render functions
-// ---------------------------------------------------------------------------
 
 fn render_confirmation_card(
     state: &RunAgentsEditState,
@@ -1176,10 +942,6 @@ fn render_terminal_state(
     render_status_only_card(label, appearance, kind, app)
 }
 
-/// Maps a terminal `RunAgentsResult` to the user-visible label + the
-/// status icon kind shown by `render_status_only_card`. Pure-function
-/// extraction so the label-format / pluralization rules can be unit
-/// tested without spinning up a view context.
 pub(crate) fn format_terminal_state(result: &RunAgentsResult) -> (String, StatusKind) {
     match result {
         RunAgentsResult::Launched { agents, .. } => {

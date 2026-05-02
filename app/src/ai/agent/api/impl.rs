@@ -213,21 +213,9 @@ fn get_supported_tools(params: &RequestParams) -> Vec<api::ToolType> {
     }
 
     if params.orchestration_enabled {
-        // Always advertise the legacy start-agent tool (v2 when
-        // OrchestrationV2 is on, v1 otherwise) so the server can fall
-        // back to it when its own `orchestrate_tool_enabled` flag is
-        // off. The server's tool registration only registers a tool
-        // if the client advertises it; previously we removed
-        // start_agent_v2 from the list when both client-side
-        // orchestrate flags were on, which left the server with
-        // nothing to register when its flag was off and produced a
-        // "start_agent missing" failure path.
-        //
-        // When the client also supports Orchestrate, we advertise it
-        // ALONGSIDE start_agent_v2. The server's `selectStartAgentTool`
-        // picks orchestrate over the legacy variants whenever both
-        // are advertised AND its own flag is on, so there's no
-        // per-call coexistence concern from the model side.
+        // Always advertise the legacy start-agent tool so the server
+        // can fall back to it when its own orchestrate flag is off.
+        // When RunAgents is also enabled, advertise it alongside.
         supported_tools.push(if FeatureFlag::OrchestrationV2.is_enabled() {
             api::ToolType::StartAgentV2
         } else {

@@ -510,9 +510,6 @@ impl ConvertToExchanges for &api::Task {
                 | api::message::Message::ArtifactEvent(_)
                 | api::message::Message::MessagesReceivedFromAgents(_)
                 | api::message::Message::ModelUsed(_)
-                // [Stage 2] Plan-card config snapshot — hydrated by the plan
-                // card's AIDocumentModel subscription, not part of the
-                // exchange's input/output stream.
                 | api::message::Message::OrchestrationConfigSnapshot(_) => false,
             };
 
@@ -1953,9 +1950,6 @@ where
                 | api::message::Message::ArtifactEvent(_)
                 | api::message::Message::InvokeSkill(_)
                 | api::message::Message::ModelUsed(_)
-                // [Stage 2] Plan-card config snapshot is server-synthesized
-                // metadata; treat it like other agent/stream activity for
-                // first-token timing purposes.
                 | api::message::Message::OrchestrationConfigSnapshot(_) => {
                     message.timestamp.as_ref().map(|timestamp| {
                         proto_timestamp_to_local_datetime(timestamp.seconds, timestamp.nanos)

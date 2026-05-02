@@ -263,12 +263,8 @@ impl OrchestrationPillBar {
     }
 }
 
-/// Renders a non-interactive agent pill keyed off the agent's name. Used by
-/// the orchestrate confirmation card's agents footer (and any other surface
-/// that needs to display a list of named agents without navigation
-/// behavior). Reuses the same deterministic-color + initial-letter avatar
-/// rendering as the live pill bar so the two surfaces stay visually
-/// consistent.
+/// Renders a non-interactive agent pill using the same deterministic-color
+/// + initial-letter avatar as the live pill bar.
 pub fn render_static_agent_pill(name: &str, app: &AppContext) -> Box<dyn Element> {
     let appearance = Appearance::as_ref(app);
     let theme = appearance.theme();

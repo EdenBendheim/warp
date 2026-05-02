@@ -716,11 +716,8 @@ impl BlocklistAIActionExecutor {
                 .ask_user_question_executor
                 .update(ctx, |executor, ctx| executor.execute(input, ctx))
                 .into(),
-            // The confirmation-card view drives orchestrate Accept via
-            // `execute_run_agents` with the user-edited request; this
-            // arm covers callers that reach the executor through the
-            // standard pending-action path with the streamed (un-edited)
-            // request.
+            // Standard executor path (un-edited request). The card
+            // view's Accept uses `execute_run_agents` instead.
             AIAgentActionType::RunAgents(_) => self
                 .run_agents_executor
                 .update(ctx, |executor, ctx| executor.execute(input, ctx))
@@ -854,21 +851,8 @@ impl BlocklistAIActionExecutor {
         }
     }
 
-    /// Sibling entry point for `RunAgents` dispatch from the
-    /// confirmation card. Unlike [`Self::try_to_execute_action`], this
-    /// takes the user-edited [`RunAgentsRequest`] directly rather than
-    /// pulling it off the streamed `AIAgentAction`. The card view
-    /// drives this on Accept; the standard executor path remains in
-    /// place as a defence-in-depth fallback for callers that bypass
-    /// the card.
-    ///
-    /// Mirrors the async-tracking flow [`Self::try_to_execute_action`]
-    /// performs internally: inserts an `async_executing_actions` entry
-    /// (so cancellation works), emits
-    /// [`BlocklistAIActionExecutorEvent::ExecutingAction`], spawns the
-    /// dispatch aggregator, and emits
-    /// [`BlocklistAIActionExecutorEvent::FinishedAction`] when the
-    /// terminal `RunAgentsResult` settles.
+    /// Dispatches a `RunAgents` action with a user-edited request
+    /// (from the confirmation card's Accept handler).
     pub fn execute_run_agents(
         &mut self,
         action_id: AIAgentActionId,
@@ -895,10 +879,8 @@ impl BlocklistAIActionExecutor {
             )
         });
 
-        // Synthesize the AIAgentAction so cancellation (which emits
-        // `cancelled_result()` from the action variant) and the
-        // `FinishedAction` task_id plumbing both have an action to
-        // refer to.
+        // Synthesize an AIAgentAction for cancellation and task_id
+        // plumbing.
         let action = AIAgentAction {
             id: action_id.clone(),
             task_id,

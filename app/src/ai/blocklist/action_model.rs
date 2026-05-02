@@ -683,14 +683,8 @@ impl BlocklistAIActionModel {
         }
     }
 
-    /// Drives the orchestrate (`RunAgents`) Accept path with a
-    /// user-edited request. Mirrors the
-    /// [`Self::start_pending_action_by_id`] sequence (remove from
-    /// pending → dispatch via executor → add to running → update
-    /// conversation status) but invokes the dedicated
-    /// [`BlocklistAIActionExecutor::execute_run_agents`] sibling API
-    /// rather than the streamed-action path so the user's edits flow
-    /// through to dispatch.
+    /// Dispatches a `RunAgents` action with the user-edited request
+    /// from the confirmation card.
     pub fn execute_run_agents(
         &mut self,
         action_id: &AIAgentActionId,

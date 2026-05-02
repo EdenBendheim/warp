@@ -1,19 +1,7 @@
 //! Async executor for `AIAgentActionType::RunAgents`.
 //!
-//! Mirrors [`super::start_agent::StartAgentExecutor`]: a real action
-//! executor with its own `pending` table, lifecycle events, and
-//! integration into [`super::BlocklistAIActionExecutor`]'s
-//! `try_to_execute_action` / `should_autoexecute` central dispatch.
-//!
-//! Reuses [`super::start_agent::StartAgentExecutor::dispatch`] as the
-//! per-child fan-out primitive, so each agent in a `RunAgents` request
-//! lands on the same StartAgent code path the LLM-emitted single-agent
-//! `StartAgent` action uses. The novel piece here is the aggregation
-//! step (zip per-child outcomes back into a `RunAgentsResult::Launched`
-//! / `Failure` / `Cancelled`) and the user-edit-aware sibling entry
-//! point [`RunAgentsExecutor::dispatch_run_agents`], which the
-//! confirmation card view drives on Accept with the user-edited
-//! request rather than the streamed action.
+//! Fans out per-child via [`super::start_agent::StartAgentExecutor::dispatch`]
+//! and aggregates the outcomes into a single `RunAgentsResult`.
 use std::collections::HashMap;
 
 use ai::agent::action::{RunAgentsAgentRunConfig, RunAgentsExecutionMode, RunAgentsRequest};
@@ -35,43 +23,30 @@ use crate::ai::agent::{
 use crate::ai::blocklist::BlocklistAIHistoryModel;
 use warpui::SingletonEntity;
 
-/// In-flight UI snapshot used by the confirmation-card view to render
-/// "Spawning N agents…" while the dispatch batch resolves.
-///
-/// Carried through [`RunAgentsExecutorEvent::SpawningStarted`] so the
-/// view does not need a separate "agent count at dispatch time"
-/// channel.
+/// Snapshot of an in-flight dispatch, carried through
+/// [`RunAgentsExecutorEvent::SpawningStarted`].
 #[derive(Debug, Clone, Copy)]
 pub struct RunAgentsSpawningSnapshot {
     pub agent_count: usize,
 }
 
-/// In-flight tracking per `RunAgents` action. The presence of an entry
-/// is the executor-side idempotency guard for repeat dispatch attempts
-/// against the same `AIAgentActionId`.
+/// In-flight tracking per `RunAgents` action (idempotency guard).
 struct PendingRunAgents;
 
 pub struct RunAgentsExecutor {
     pending: HashMap<AIAgentActionId, PendingRunAgents>,
-    /// Used to fan out per-child dispatches. Each child is just a
-    /// regular `StartAgent` request from the StartAgent executor's
-    /// perspective; the orchestrate-specific aggregation lives here.
     start_agent_executor: ModelHandle<StartAgentExecutor>,
 }
 
-/// Lifecycle events emitted as the executor drives the in-flight
-/// dispatch. The confirmation-card view subscribes to these to render
-/// the "Spawning N agents…" card while a dispatch is active.
+/// Lifecycle events for in-flight dispatches.
 pub enum RunAgentsExecutorEvent {
-    /// A dispatch has begun for `action_id`. The `snapshot` carries
-    /// the data the view needs to render the in-flight card.
     SpawningStarted {
         action_id: AIAgentActionId,
         snapshot: RunAgentsSpawningSnapshot,
     },
-    /// A dispatch has settled (success / partial / failure /
-    /// cancelled). Views clear their in-flight state on receipt.
-    SpawningFinished { action_id: AIAgentActionId },
+    SpawningFinished {
+        action_id: AIAgentActionId,
+    },
 }
 
 impl Entity for RunAgentsExecutor {
@@ -89,31 +64,13 @@ impl RunAgentsExecutor {
         }
     }
 
-    /// Returns true when a dispatch is in flight for `action_id`.
-    /// Read by the confirmation card view as an additional idempotency
-    /// guard on top of its own local "is_spawning" flag.
     pub fn is_pending(&self, action_id: &AIAgentActionId) -> bool {
         self.pending.contains_key(action_id)
     }
 
-    /// Dispatch entry point used by both the standard executor path
-    /// (via [`Self::execute`]) and the confirmation card's Accept
-    /// handler (via [`super::BlocklistAIActionExecutor::execute_run_agents`]).
-    /// Returns a receiver the caller awaits to learn the terminal
-    /// `RunAgentsResult`.
-    ///
-    /// On success this:
-    ///   * Inserts a pending entry keyed by `action_id` (idempotency guard).
-    ///   * Emits [`RunAgentsExecutorEvent::SpawningStarted`] so views
-    ///     can render the in-flight card.
-    ///   * Fans out per-child via [`StartAgentExecutor::dispatch`].
-    ///   * Spawns an aggregator that builds [`RunAgentsResult::Launched`]
-    ///     from the child outcomes and emits
-    ///     [`RunAgentsExecutorEvent::SpawningFinished`] on completion.
-    ///
-    /// Run-level validation failures (empty configs, OpenCode+Cloud)
-    /// short-circuit with a pre-loaded `RunAgentsResult::Failure` and
-    /// no `SpawningStarted`/`Finished` events.
+    /// Fans out per-child dispatches and returns a receiver for the
+    /// aggregate `RunAgentsResult`. Validation failures short-circuit
+    /// synchronously.
     pub fn dispatch_run_agents(
         &mut self,
         action_id: AIAgentActionId,
@@ -158,10 +115,6 @@ impl RunAgentsExecutor {
             ..
         } = request;
 
-        // Per-child fan-out. Each slot is either an immediately-resolved
-        // failure (translation errors like OpenCode+Remote, missing
-        // parent_run_id for Cloud) or a pending receiver that will yield
-        // a `StartAgentOutcome` when the child reaches a terminal state.
         let mut slots: Vec<ChildSlot> = Vec::with_capacity(agent_run_configs.len());
         for cfg in &agent_run_configs {
             let prompt = compose_run_agents_child_prompt(&base_prompt, &cfg.prompt);
@@ -312,11 +265,8 @@ enum ChildSlot {
     Pending(async_channel::Receiver<StartAgentOutcome>),
 }
 
-/// Run-level validation that should hold regardless of how the request
-/// reached the executor. The card view's `accept_disabled_reason`
-/// gates the Accept button for these same conditions in the editor;
-/// this is the defence-in-depth check for paths that bypass the
-/// button (Enter outside the card, the standard executor path).
+/// Defence-in-depth validation; mirrors the card view's
+/// `accept_disabled_reason` check.
 fn validate_request(request: &RunAgentsRequest) -> Result<(), String> {
     if request.agent_run_configs.is_empty() {
         return Err("orchestrate: empty agent_run_configs".to_string());
@@ -331,11 +281,8 @@ fn validate_request(request: &RunAgentsRequest) -> Result<(), String> {
     Ok(())
 }
 
-/// Compose the per-child prompt per spec invariant:
-/// `base_prompt + "\n\n" + agent_run_configs[i].prompt` when both are
-/// non-empty, just `base_prompt` when the per-agent `prompt` is empty,
-/// and just the per-agent `prompt` when `base_prompt` is empty
-/// (defensive).
+/// Joins `base_prompt` and a per-agent prompt with `"\n\n"`,
+/// falling back to whichever is non-empty.
 pub fn compose_run_agents_child_prompt(base_prompt: &str, per_agent_prompt: &str) -> String {
     let base_trimmed = base_prompt.trim();
     let per_agent_trimmed = per_agent_prompt.trim();
@@ -347,13 +294,9 @@ pub fn compose_run_agents_child_prompt(base_prompt: &str, per_agent_prompt: &str
     }
 }
 
-/// Translate a single `(orchestrate_execution_mode, harness_type,
-/// model_id, per-agent config)` tuple into the
-/// [`StartAgentExecutionMode`] the StartAgent executor expects.
-///
-/// Returns `Err(reason)` if the combination is rejected pre-flight
-/// (e.g. OpenCode+Remote or an unrecognised local harness); the
-/// caller surfaces the reason as a per-child `Failed` outcome.
+/// Translates run-wide config into a per-child
+/// [`StartAgentExecutionMode`]. Returns `Err` for rejected
+/// combinations (e.g. OpenCode+Remote).
 pub fn run_agents_to_start_agent_mode(
     run_execution_mode: &RunAgentsExecutionMode,
     run_harness_type: &str,
@@ -363,13 +306,8 @@ pub fn run_agents_to_start_agent_mode(
 ) -> Result<StartAgentExecutionMode, String> {
     match run_execution_mode {
         RunAgentsExecutionMode::Local => {
-            // Empty/oz harness uses the legacy local Oz path
-            // (`harness_type: None`). Other harnesses route through the
-            // Local-with-harness arm.
             let trimmed = run_harness_type.trim();
-            // Honor the user's run-wide model selection on local launches.
-            // `propagate_parent_agent_settings` would otherwise inherit the
-            // parent's preferred LLM and silently discard this choice.
+            // Propagate run-wide model selection for local launches.
             let trimmed_model_id = run_model_id.trim();
             let model_id = (!trimmed_model_id.is_empty()).then(|| trimmed_model_id.to_string());
             if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("oz") {
@@ -389,9 +327,7 @@ pub fn run_agents_to_start_agent_mode(
             worker_host,
             computer_use_enabled,
         } => {
-            // OpenCode is unsupported on Remote per `start_agent::execute`;
-            // surface as a child-level failure so other children can still
-            // launch.
+            // OpenCode is unsupported on Remote.
             if run_harness_type.eq_ignore_ascii_case("opencode") {
                 return Err(
                     "Remote child agents do not support the opencode harness yet.".to_string(),

@@ -10,10 +10,6 @@ use ai::agent::action_result::StartAgentVersion;
 use warp_core::features::FeatureFlag;
 use warpui::{App, EntityId};
 
-/// First request id minted by a freshly-constructed `StartAgentExecutor`.
-/// Tests rely on this monotonic ordering when calling
-/// `record_child_conversation` to mimic the reservation flow normally
-/// driven by `terminal_pane.rs`.
 const FIRST_REQUEST_ID: StartAgentRequestId = StartAgentRequestId::from_raw_for_test(0);
 fn build_start_agent_action(
     version: StartAgentVersion,
@@ -74,10 +70,6 @@ fn execute_returns_error_when_child_startup_is_blocked_before_initialization() {
             )
         });
 
-        // Mimic the reservation flow that the terminal pane normally drives:
-        // record the freshly-created child conversation id back on the
-        // executor's pending request so subsequent history events can
-        // disambiguate per-request side effects.
         history_model.update(&mut app, |model, ctx| {
             model.record_new_conversation_request_complete(
                 FIRST_REQUEST_ID,
@@ -166,7 +158,6 @@ fn execute_returns_detailed_error_when_child_startup_fails_before_initialization
             )
         });
 
-        // Reservation echo — see the matching call in the previous test.
         history_model.update(&mut app, |model, ctx| {
             model.record_new_conversation_request_complete(
                 FIRST_REQUEST_ID,
@@ -307,11 +298,6 @@ fn execute_returns_error_when_local_harness_child_missing_parent_run_id() {
     });
 }
 
-/// Asserts that two parallel `execute()` calls populate the executor's
-/// pending HashMap with two distinct entries, each disambiguated by their
-/// freshly-minted `StartAgentRequestId`. This is the happy-path baseline
-/// for the orchestrate Accept fan-out that issues N concurrent
-/// StartAgents under the same `parent_conversation_id`.
 #[test]
 fn parallel_dispatch_keeps_two_pendings_distinguishable_by_request_id() {
     App::test((), |mut app| async move {
@@ -323,8 +309,6 @@ fn parallel_dispatch_keeps_two_pendings_distinguishable_by_request_id() {
             history_model.start_new_conversation(terminal_view_id, false, false, ctx)
         });
 
-        // Issue two execute() calls back-to-back; each should mint a fresh
-        // request id (0 then 1) and insert a fresh pending into the executor.
         let action_a = build_start_agent_action(
             StartAgentVersion::V1,
             StartAgentExecutionMode::local_with_defaults(),
@@ -364,12 +348,6 @@ fn parallel_dispatch_keeps_two_pendings_distinguishable_by_request_id() {
     });
 }
 
-/// Asserts that the executor's `find_pending_by_child` lookup correctly
-/// disambiguates which of two parallel pendings is targeted by an
-/// incoming `UpdatedConversationStatus` history event. Without the
-/// reservation flow, both pendings would share the same
-/// `parent_conversation_id` and the first-match heuristic would have
-/// picked an arbitrary one.
 #[test]
 fn parallel_pendings_each_resolve_independently_via_recorded_child_id() {
     App::test((), |mut app| async move {
@@ -427,8 +405,6 @@ fn parallel_pendings_each_resolve_independently_via_recorded_child_id() {
             panic!("expected async executions");
         };
 
-        // Two distinct child conversations under the same parent, mimicking
-        // the orchestrate Accept fan-out.
         let child_a = history_model.update(&mut app, |history_model, ctx| {
             history_model.start_new_child_conversation(
                 terminal_view_id,
@@ -455,7 +431,6 @@ fn parallel_pendings_each_resolve_independently_via_recorded_child_id() {
             );
         });
 
-        // Fail child_b only; child_a's pending must be untouched.
         history_model.update(&mut app, |history_model, ctx| {
             history_model.update_conversation_status_with_error_message(
                 terminal_view_id,
@@ -466,7 +441,6 @@ fn parallel_pendings_each_resolve_independently_via_recorded_child_id() {
             );
         });
 
-        // child_b's future resolves with the failure error...
         let async_b = future_b.await;
         let result_b = app.update(|ctx| complete_b(async_b, ctx));
         assert!(matches!(
@@ -475,7 +449,6 @@ fn parallel_pendings_each_resolve_independently_via_recorded_child_id() {
                 if error == "Agent B init failed"
         ));
 
-        // ...while child_a's pending is still alive in the executor's table.
         executor.read(&app, |executor, _| {
             assert_eq!(
                 executor.pending.len(),
@@ -485,7 +458,6 @@ fn parallel_pendings_each_resolve_independently_via_recorded_child_id() {
             assert!(executor.pending.contains_key(&FIRST_REQUEST_ID));
         });
 
-        // Drop the still-pending future to avoid hanging the test.
         drop(future_a);
         drop(complete_a);
     });

@@ -1,9 +1,3 @@
-//! Pure-data tests for `RunAgentsEditState` transition logic.
-//!
-//! Full UI integration tests (cards rendered into a live `AIBlock` view)
-//! belong under `crates/integration`. Stage 1 dispatch ordering / mid-batch /
-//! M=0 / pre-dispatch coverage lives in
-//! `crate::ai::blocklist::run_agents_dispatch_tests`.
 use ai::agent::action::{RunAgentsAgentRunConfig, RunAgentsExecutionMode, RunAgentsRequest};
 use ai::agent::action_result::{
     RunAgentsAgentOutcome, RunAgentsAgentOutcomeKind, RunAgentsLaunchedExecutionMode,
@@ -88,10 +82,6 @@ fn local_to_cloud_resets_opencode_to_oz() {
 
 #[test]
 fn cloud_without_env_no_longer_disables_accept() {
-    // Round 6 follow-up B2: empty environment_id is now a soft
-    // recommendation surfaced inline in the Cloud editor (rendered as
-    // `ui_warning_color` text), not a hard validation error. The Accept
-    // button stays enabled so users can launch with no environment.
     let state = RunAgentsEditState::from_request(&make_request(
         "oz",
         RunAgentsExecutionMode::Remote {
@@ -108,9 +98,7 @@ fn cloud_without_env_no_longer_disables_accept() {
 
 #[test]
 fn cloud_with_opencode_disables_accept() {
-    // Bypassing the toggle helper that resets OpenCode to Oz so we can
-    // exercise the validation gate's defensive coverage of the LLM-supplied
-    // (Cloud, OpenCode) pairing.
+    // Bypass the toggle helper to test the validation gate directly.
     let state = RunAgentsEditState::from_request(&make_request(
         "opencode",
         RunAgentsExecutionMode::Remote {
@@ -204,10 +192,6 @@ fn to_request_round_trips_request_fields() {
     assert_eq!(round_tripped.harness_type, req.harness_type);
     assert_eq!(round_tripped.execution_mode, req.execution_mode);
     assert_eq!(round_tripped.agent_run_configs, req.agent_run_configs);
-    // PR feedback BLOCKING: skills must round-trip through the
-    // confirmation card so each child's `StartAgentExecutionMode::Remote`
-    // receives the originally-requested skill list, per PRODUCT.md
-    // "Skills and base prompt are passed through verbatim and not displayed".
     assert_eq!(round_tripped.skills, req.skills);
 }
 

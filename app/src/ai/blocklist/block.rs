@@ -940,11 +940,7 @@ pub struct AIBlock {
     imported_comments: HashMap<AIAgentActionId, ImportedCommentGroup>,
     has_imported_comments: bool,
 
-    /// Per-action `RunAgentsCardView`. The view owns its own edit
-    /// state, button + picker handles, and in-flight spawning
-    /// snapshot. Lazily created on first observation of an
-    /// `AIAgentActionType::RunAgents` action via
-    /// `ensure_run_agents_card_view`.
+    /// Per-action `RunAgentsCardView`, lazily created.
     run_agents_card_views: HashMap<AIAgentActionId, ViewHandle<RunAgentsCardView>>,
 
     /// Handle for the background link detection task, kept so we can abort a previous
@@ -1860,10 +1856,6 @@ impl AIBlock {
                     .or_default();
             }
 
-            // Ensure the per-action `RunAgentsCardView` exists so the
-            // orchestrate confirmation card can render on its first
-            // frame. The view owns its own state and dispatches
-            // events back to AIBlock for Accept/Reject.
             if let AIAgentActionType::RunAgents(req) = &action.action {
                 self.ensure_run_agents_card_view(&action.id, req, ctx);
             }

@@ -93,14 +93,6 @@ fn manual_reexpand_while_streaming_stays_expanded_after_finish() {
     });
 }
 
-// ---------------------------------------------------------------------------
-// `compose_run_agents_child_prompt` — covers the four input combinations the
-// spec calls out: (base, per-agent), base-only, per-agent-only, and both empty
-// (defensive). The blank lines between the base prompt and the per-agent
-// prompt are required by the spec: PRODUCT.md "Run-wide configuration" notes
-// the per-child prompt is `base_prompt + "\n\n" + agent_run_configs[i].prompt`.
-// ---------------------------------------------------------------------------
-
 #[test]
 fn compose_child_prompt_concatenates_when_both_non_empty() {
     let composed = compose_run_agents_child_prompt("base", "do X");
@@ -127,18 +119,9 @@ fn compose_child_prompt_returns_empty_when_both_empty() {
 
 #[test]
 fn compose_child_prompt_treats_whitespace_only_base_as_empty() {
-    // Whitespace-only base is treated as empty by `trim()`-based detection,
-    // so the composed prompt should fall through to the per-agent text.
     let composed = compose_run_agents_child_prompt("   \n", "do X");
     assert_eq!(composed, "do X");
 }
-
-// ---------------------------------------------------------------------------
-// `run_agents_to_start_agent_mode` — Remote arm must propagate run-wide
-// `skills` into each child's `StartAgentExecutionMode::Remote.skill_references`
-// (PR feedback BLOCKING; PRODUCT.md "Skills and base prompt are passed through
-// verbatim and not displayed").
-// ---------------------------------------------------------------------------
 
 fn agent_cfg() -> RunAgentsAgentRunConfig {
     RunAgentsAgentRunConfig {
@@ -212,9 +195,6 @@ fn remote_arm_with_empty_skills_propagates_empty_vec() {
 
 #[test]
 fn remote_arm_rejects_opencode() {
-    // OpenCode+Cloud is unsupported per `start_agent::execute`. The
-    // function should surface this as a per-child error so other children
-    // can still launch.
     let err = run_agents_to_start_agent_mode(
         &RunAgentsExecutionMode::Remote {
             environment_id: "env-1".to_string(),

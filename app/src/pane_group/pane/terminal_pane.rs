@@ -115,17 +115,8 @@ fn serialize_proto_to_base64<M: prost::Message>(message: &M) -> String {
     BASE64_STANDARD.encode(message.encode_to_vec())
 }
 
-/// Overrides the child's preferred agent-mode LLM with `model_id` when one
-/// is provided. Used by the orchestrate confirmation card so the user's
-/// model selection is honored on local launches.
-///
-/// The child terminal view's preferred LLM is set in
-/// `propagate_parent_agent_settings` (see `pane_group::child_agent`),
-/// which inherits whatever LLM the parent currently has active. This
-/// helper re-applies the user-supplied selection on top of that
-/// inheritance so the orchestrate dropdown isn't silently overwritten.
-/// `None` means "inherit the parent's preferred LLM" (the legacy
-/// behavior; helper is a no-op).
+/// Overrides the child's preferred agent-mode LLM. `None` is a no-op
+/// (inherits the parent's LLM via `propagate_parent_agent_settings`).
 fn apply_child_model_id_override(
     child_terminal_view_id: EntityId,
     model_id: Option<&str>,
@@ -1156,18 +1147,9 @@ fn handle_terminal_view_event(
     }
 }
 
-/// Dispatches an `Event::StartAgentConversation` to the appropriate per-mode
-/// helper. Behavior is identical to the previous inline match — the helpers
-/// are extracted free functions so the orchestrate Accept path can fan out
-/// N requests through them without duplicating pane-creation logic.
-///
-/// Each helper echoes the freshly-created child conversation id back to
-/// the executor via
-/// [`BlocklistAIHistoryModel::record_new_conversation_request_complete`]
-/// so the executor's history-event handler can disambiguate which pending
-/// request a `ConversationServerTokenAssigned` /
-/// `UpdatedConversationStatus` event refers to when N requests are in
-/// flight in parallel.
+/// Dispatches a StartAgent request to the appropriate per-mode helper.
+/// Each helper echoes the child conversation id back via
+/// [`BlocklistAIHistoryModel::record_new_conversation_request_complete`].
 fn dispatch_start_agent_conversation(
     group: &mut PaneGroup,
     parent_pane_id: PaneId,
@@ -1236,17 +1218,9 @@ fn dispatch_start_agent_conversation(
     }
 }
 
-/// Synchronously sets up a hidden child pane for a Local-no-harness child
-/// agent and dispatches its initial prompt through the AI controller.
-/// Returns the freshly-created `AIConversationId` on success, or `None` if
-/// pane creation failed (the failure path matches the previous inline arm,
-/// which silently returned without creating a fallback error pane).
-///
-/// On success the freshly-created child conversation id is echoed back to
-/// the executor's pending table via
-/// [`StartAgentExecutor::record_child_conversation`] so subsequent
-/// `ConversationServerTokenAssigned` / `UpdatedConversationStatus` history
-/// events can be matched back to this request.
+/// Sets up a hidden child pane for a Local-no-harness agent and
+/// dispatches the prompt. Returns the child `AIConversationId` on
+/// success.
 fn launch_local_no_harness_child(
     group: &mut PaneGroup,
     parent_pane_id: PaneId,
@@ -1270,11 +1244,6 @@ fn launch_local_no_harness_child(
         ctx,
     )?;
 
-    // Honor an explicit model_id override (e.g. from the orchestrate
-    // confirmation card). `create_hidden_child_agent_conversation` already
-    // ran `propagate_parent_agent_settings`, which inherited the parent's
-    // preferred LLM; this re-applies the user's selection on top so it
-    // is not silently overwritten.
     apply_child_model_id_override(terminal_view_id, model_id.as_deref(), ctx);
 
     BlocklistAIHistoryModel::handle(ctx).update(ctx, |model, ctx| {
@@ -1306,17 +1275,8 @@ fn launch_local_no_harness_child(
     Some(conversation_id)
 }
 
-/// Asynchronously prepares the local harness command (running the v2
-/// PreparedLocalHarnessLaunch flow), then on completion creates the hidden
-/// child pane, assigns the run id, and executes the launch command. The
-/// initial spawn is fire-and-forget; success or failure flows back through
-/// the shared `BlocklistAIHistoryModel` events that `StartAgentExecutor`
-/// observes.
-///
-/// The executor handle and request id are captured into the post-spawn
-/// callback so the freshly-created child conversation id can be echoed
-/// back via [`StartAgentExecutor::record_child_conversation`] before the
-/// launch command is executed.
+/// Asynchronously prepares a local harness launch, then creates the
+/// hidden child pane and executes the launch command.
 #[cfg(not(target_family = "wasm"))]
 #[allow(clippy::too_many_arguments)]
 fn launch_local_harness_child(
@@ -1336,7 +1296,7 @@ fn launch_local_harness_child(
     let parent_run_id = request.parent_run_id.clone();
     let prompt = request.prompt.clone();
     let lifecycle_subscription = request.lifecycle_subscription.clone();
-    let _ = lifecycle_subscription; // currently unused on this arm; kept to mirror the StartAgentRequest payload.
+    let _ = lifecycle_subscription;
     let shell_type = group
         .terminal_view_from_pane_id(parent_pane_id, ctx)
         .and_then(|terminal_view| terminal_view.as_ref(ctx).active_session_shell_type(ctx));

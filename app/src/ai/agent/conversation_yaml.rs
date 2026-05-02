@@ -244,8 +244,6 @@ fn write_task_messages(
             | Message::CodeReview(_)
             | Message::ServerEvent(_)
             | Message::InvokeSkill(_)
-            // Stage 2 plan-card config snapshot — purely metadata, nothing
-            // searchable to materialize.
             | Message::OrchestrationConfigSnapshot(_) => {}
         }
     }
