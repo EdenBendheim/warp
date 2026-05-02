@@ -513,6 +513,13 @@ impl RunAgentsCardView {
             );
             return;
         }
+        // Close the editor before dispatching so the card renders the
+        // spawning state on the next frame rather than keeping the
+        // editor visible until the SpawningStarted event arrives.
+        if self.state.is_editor_open {
+            self.state.is_editor_open = false;
+            self.sync_card_buttons(ctx);
+        }
         let action_id = self.action_id.clone();
         self.action_model.update(ctx, |action_model, action_ctx| {
             action_model.execute_run_agents(&action_id, request, action_ctx);
