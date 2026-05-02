@@ -78,8 +78,12 @@ fn execute_returns_error_when_child_startup_is_blocked_before_initialization() {
         // record the freshly-created child conversation id back on the
         // executor's pending request so subsequent history events can
         // disambiguate per-request side effects.
-        executor.update(&mut app, |executor, _| {
-            executor.record_child_conversation(FIRST_REQUEST_ID, child_conversation_id);
+        history_model.update(&mut app, |model, ctx| {
+            model.record_new_conversation_request_complete(
+                FIRST_REQUEST_ID,
+                child_conversation_id,
+                ctx,
+            );
         });
 
         executor.read(&app, |executor, _| {
@@ -163,8 +167,12 @@ fn execute_returns_detailed_error_when_child_startup_fails_before_initialization
         });
 
         // Reservation echo — see the matching call in the previous test.
-        executor.update(&mut app, |executor, _| {
-            executor.record_child_conversation(FIRST_REQUEST_ID, child_conversation_id);
+        history_model.update(&mut app, |model, ctx| {
+            model.record_new_conversation_request_complete(
+                FIRST_REQUEST_ID,
+                child_conversation_id,
+                ctx,
+            );
         });
 
         history_model.update(&mut app, |history_model, ctx| {
@@ -438,9 +446,13 @@ fn parallel_pendings_each_resolve_independently_via_recorded_child_id() {
             )
         });
 
-        executor.update(&mut app, |executor, _| {
-            executor.record_child_conversation(FIRST_REQUEST_ID, child_a);
-            executor.record_child_conversation(StartAgentRequestId::from_raw_for_test(1), child_b);
+        history_model.update(&mut app, |model, ctx| {
+            model.record_new_conversation_request_complete(FIRST_REQUEST_ID, child_a, ctx);
+            model.record_new_conversation_request_complete(
+                StartAgentRequestId::from_raw_for_test(1),
+                child_b,
+                ctx,
+            );
         });
 
         // Fail child_b only; child_a's pending must be untouched.

@@ -2168,6 +2168,18 @@ pub enum BlocklistAIHistoryEvent {
         conversation_id: AIConversationId,
         terminal_view_id: EntityId,
     },
+
+    /// Emitted when a programmatic new-conversation request (identified by
+    /// its executor-minted [`StartAgentRequestId`]) has been fulfilled and
+    /// the resulting [`AIConversationId`] is available. The
+    /// [`StartAgentExecutor`] uses this to link its pending table entry to
+    /// the freshly-created conversation so that subsequent history events
+    /// (`ConversationServerTokenAssigned`, `UpdatedConversationStatus`) can
+    /// be matched back to the originating request.
+    NewConversationRequestComplete {
+        request_id: crate::ai::blocklist::StartAgentRequestId,
+        conversation_id: AIConversationId,
+    },
 }
 
 impl BlocklistAIHistoryEvent {
@@ -2234,7 +2246,28 @@ impl BlocklistAIHistoryEvent {
             BlocklistAIHistoryEvent::UpdatedConversationMetadata {
                 terminal_view_id, ..
             } => *terminal_view_id,
+            // NewConversationRequestComplete is executor-scoped and has no
+            // terminal_view_id.
+            BlocklistAIHistoryEvent::NewConversationRequestComplete { .. } => None,
         }
+    }
+}
+
+impl BlocklistAIHistoryModel {
+    /// Records that a programmatic new-conversation request has been
+    /// fulfilled. Emits [`BlocklistAIHistoryEvent::NewConversationRequestComplete`]
+    /// so subscribers (notably [`StartAgentExecutor`]) can link the
+    /// request to the freshly-created conversation.
+    pub fn record_new_conversation_request_complete(
+        &mut self,
+        request_id: crate::ai::blocklist::StartAgentRequestId,
+        conversation_id: AIConversationId,
+        ctx: &mut ModelContext<Self>,
+    ) {
+        ctx.emit(BlocklistAIHistoryEvent::NewConversationRequestComplete {
+            request_id,
+            conversation_id,
+        });
     }
 }
 

@@ -22,7 +22,7 @@ use crate::{
         ambient_agents::{task::HarnessConfig, AgentConfigSnapshot},
         blocklist::{
             agent_view::AgentViewEntryOrigin, orchestration_events::OrchestrationEventService,
-            BlocklistAIHistoryModel, StartAgentExecutor, StartAgentRequest,
+            BlocklistAIHistoryModel, StartAgentRequest,
         },
         llms::LLMPreferences,
         skills::SkillManager,
@@ -1140,13 +1140,12 @@ fn handle_terminal_view_event(
                     log::warn!("No hidden pane found for child conversation {conversation_id:?}");
                 }
             }
-            Event::StartAgentConversation { request, executor } => {
+            Event::StartAgentConversation(request) => {
                 dispatch_start_agent_conversation(
                     group,
                     pane_id,
                     terminal_pane_id,
                     request.clone(),
-                    executor.clone(),
                     ctx,
                 );
             }
@@ -1162,11 +1161,11 @@ fn handle_terminal_view_event(
 /// are extracted free functions so the orchestrate Accept path can fan out
 /// N requests through them without duplicating pane-creation logic.
 ///
-/// The executor handle is plumbed through so each helper can echo the
-/// freshly-created child conversation id back to the executor's pending
-/// table via [`StartAgentExecutor::record_child_conversation`]. This is
-/// the disambiguator that lets the executor's history-event handler know
-/// which pending request a `ConversationServerTokenAssigned` /
+/// Each helper echoes the freshly-created child conversation id back to
+/// the executor via
+/// [`BlocklistAIHistoryModel::record_new_conversation_request_complete`]
+/// so the executor's history-event handler can disambiguate which pending
+/// request a `ConversationServerTokenAssigned` /
 /// `UpdatedConversationStatus` event refers to when N requests are in
 /// flight in parallel.
 fn dispatch_start_agent_conversation(
@@ -1174,7 +1173,6 @@ fn dispatch_start_agent_conversation(
     parent_pane_id: PaneId,
     terminal_pane_id: TerminalPaneId,
     request: StartAgentRequest,
-    executor: ModelHandle<StartAgentExecutor>,
     ctx: &mut ViewContext<PaneGroup>,
 ) {
     match request.execution_mode.clone() {
@@ -1182,7 +1180,7 @@ fn dispatch_start_agent_conversation(
             harness_type: None,
             model_id,
         } => {
-            launch_local_no_harness_child(group, parent_pane_id, request, model_id, executor, ctx);
+            launch_local_no_harness_child(group, parent_pane_id, request, model_id, ctx);
         }
         #[cfg(not(target_family = "wasm"))]
         StartAgentExecutionMode::Local {
@@ -1196,16 +1194,11 @@ fn dispatch_start_agent_conversation(
                 request,
                 harness_type,
                 model_id,
-                executor,
                 ctx,
             );
         }
         #[cfg(target_family = "wasm")]
         StartAgentExecutionMode::Local { .. } => {
-            // Discard the executor handle: WASM never gets a chance to record
-            // a child conversation id; the pending request simply stays in
-            // the executor until its async receiver is dropped.
-            let _ = executor;
             create_error_child_agent_conversation(
                 group,
                 parent_pane_id,
@@ -1237,7 +1230,6 @@ fn dispatch_start_agent_conversation(
                     harness_type,
                     title,
                 },
-                executor,
                 ctx,
             );
         }
@@ -1260,7 +1252,6 @@ fn launch_local_no_harness_child(
     parent_pane_id: PaneId,
     request: StartAgentRequest,
     model_id: Option<String>,
-    executor: ModelHandle<StartAgentExecutor>,
     ctx: &mut ViewContext<PaneGroup>,
 ) -> Option<AIConversationId> {
     let _ = model_id; // model_id is applied below via apply_child_model_id_override.
@@ -1286,8 +1277,8 @@ fn launch_local_no_harness_child(
     // is not silently overwritten.
     apply_child_model_id_override(terminal_view_id, model_id.as_deref(), ctx);
 
-    executor.update(ctx, |executor, _| {
-        executor.record_child_conversation(request_id, conversation_id);
+    BlocklistAIHistoryModel::handle(ctx).update(ctx, |model, ctx| {
+        model.record_new_conversation_request_complete(request_id, conversation_id, ctx);
     });
 
     register_legacy_local_lifecycle_subscription(
@@ -1335,7 +1326,6 @@ fn launch_local_harness_child(
     request: StartAgentRequest,
     harness_type: String,
     _model_id: Option<String>,
-    executor: ModelHandle<StartAgentExecutor>,
     ctx: &mut ViewContext<PaneGroup>,
 ) {
     let startup_directory = group.startup_path_for_new_session(Some(terminal_pane_id), ctx);
@@ -1384,8 +1374,12 @@ fn launch_local_harness_child(
                     env_vars,
                     ctx,
                 ) {
-                    executor.update(ctx, |executor, _| {
-                        executor.record_child_conversation(request_id, conversation_id);
+                    BlocklistAIHistoryModel::handle(ctx).update(ctx, |model, ctx| {
+                        model.record_new_conversation_request_complete(
+                            request_id,
+                            conversation_id,
+                            ctx,
+                        );
                     });
 
                     BlocklistAIHistoryModel::handle(ctx).update(ctx, |history_model, ctx| {
@@ -1462,7 +1456,6 @@ fn launch_remote_child(
     parent_pane_id: PaneId,
     request: StartAgentRequest,
     fields: RemoteLaunchFields,
-    executor: ModelHandle<StartAgentExecutor>,
     ctx: &mut ViewContext<PaneGroup>,
 ) -> Option<AIConversationId> {
     let RemoteLaunchFields {
@@ -1508,8 +1501,8 @@ fn launch_remote_child(
         id
     });
 
-    executor.update(ctx, |executor, _| {
-        executor.record_child_conversation(request_id, conversation_id);
+    BlocklistAIHistoryModel::handle(ctx).update(ctx, |model, ctx| {
+        model.record_new_conversation_request_complete(request_id, conversation_id, ctx);
     });
 
     let runtime_skills = match resolve_runtime_skills(&skill_references, ctx) {
@@ -1741,6 +1734,7 @@ fn handle_ai_history_event(
         | BlocklistAIHistoryEvent::UpgradedTask { .. }
         | BlocklistAIHistoryEvent::UpdatedConversationMetadata { .. }
         | BlocklistAIHistoryEvent::UpdatedConversationArtifacts { .. }
-        | BlocklistAIHistoryEvent::ConversationServerTokenAssigned { .. } => (),
+        | BlocklistAIHistoryEvent::ConversationServerTokenAssigned { .. }
+        | BlocklistAIHistoryEvent::NewConversationRequestComplete { .. } => (),
     }
 }

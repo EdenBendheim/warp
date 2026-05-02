@@ -127,11 +127,12 @@ impl StartAgentExecutor {
     }
 
     /// Records the synchronously-created child conversation id for a
-    /// pending request. Called by the terminal pane immediately after
-    /// `start_new_child_conversation` returns; subsequent
-    /// `ConversationServerTokenAssigned` / `UpdatedConversationStatus`
-    /// history events use this id to find the matching pending.
-    pub fn record_child_conversation(
+    /// pending request. Called when
+    /// [`BlocklistAIHistoryEvent::NewConversationRequestComplete`] arrives;
+    /// subsequent `ConversationServerTokenAssigned` /
+    /// `UpdatedConversationStatus` history events use this id to find the
+    /// matching pending.
+    fn record_child_conversation(
         &mut self,
         request_id: StartAgentRequestId,
         child_conversation_id: AIConversationId,
@@ -241,6 +242,12 @@ impl StartAgentExecutor {
                         });
                     }
                 }
+            }
+            BlocklistAIHistoryEvent::NewConversationRequestComplete {
+                request_id,
+                conversation_id,
+            } => {
+                self.record_child_conversation(*request_id, *conversation_id);
             }
             BlocklistAIHistoryEvent::StartedNewConversation { .. }
             | BlocklistAIHistoryEvent::CreatedSubtask { .. }
