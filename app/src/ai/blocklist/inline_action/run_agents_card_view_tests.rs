@@ -196,7 +196,7 @@ fn to_request_round_trips_request_fields() {
 }
 
 mod format_terminal_state_tests {
-    use super::super::{format_terminal_state, StatusKind};
+    use super::super::{StatusKind, format_terminal_state};
     use super::*;
 
     fn launched(name: &str, agent_id: &str) -> RunAgentsAgentOutcome {

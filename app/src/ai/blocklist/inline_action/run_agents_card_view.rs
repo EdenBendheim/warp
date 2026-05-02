@@ -25,36 +25,40 @@ use warpui::{
 use warp_cli::agent::Harness;
 use warp_core::ui::theme::Fill;
 
+use crate::LLMPreferences;
 use crate::ai::agent::icons;
 use crate::ai::agent::{AIAgentActionId, AIAgentActionResultType};
-use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::blocklist::action_model::{
     AIActionStatus, BlocklistAIActionModel, RunAgentsExecutor, RunAgentsExecutorEvent,
     RunAgentsSpawningSnapshot,
 };
 use crate::ai::blocklist::agent_view::orchestration_pill_bar::render_static_agent_pill;
+use crate::ai::blocklist::block::AIBlock;
 use crate::ai::blocklist::block::model::AIBlockModel;
 use crate::ai::blocklist::block::view_impl::WithContentItemSpacing;
-use crate::ai::blocklist::block::AIBlock;
 use crate::ai::blocklist::inline_action::inline_action_header::{HeaderConfig, InteractionMode};
 use crate::ai::blocklist::inline_action::inline_action_icons;
 use crate::ai::blocklist::inline_action::requested_action::{
-    render_requested_action_row_for_text, CTRL_C_KEYSTROKE, ENTER_KEYSTROKE,
+    CTRL_C_KEYSTROKE, ENTER_KEYSTROKE, render_requested_action_row_for_text,
 };
+use crate::ai::cloud_environments::CloudAmbientAgentEnvironment;
 use crate::ai::execution_profiles::model_menu_items::available_model_menu_items;
 use crate::ai::harness_display;
 use crate::appearance::Appearance;
+use crate::editor::{
+    EditorView, Event as EditorEvent, PropagateAndNoOpNavigationKeys, SingleLineEditorOptions,
+    TextOptions,
+};
 use crate::menu::{MenuItem, MenuItemFields};
 use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
 use crate::view_components::action_button::{ButtonSize, KeystrokeSource, NakedTheme};
 use crate::view_components::compactible_action_button::{
-    CompactibleActionButton, RenderCompactibleActionButton, MEDIUM_SIZE_SWITCH_THRESHOLD,
+    CompactibleActionButton, MEDIUM_SIZE_SWITCH_THRESHOLD, RenderCompactibleActionButton,
 };
 use crate::view_components::compactible_split_action_button::CompactibleSplitActionButton;
 use crate::view_components::dropdown::{Dropdown, DropdownAction, DropdownEvent, DropdownStyle};
 use crate::view_components::{FilterableDropdown, FilterableDropdownEvent};
-use crate::LLMPreferences;
 
 const RUN_AGENTS_WARP_WORKER_HOST: &str = "warp";
 
@@ -63,6 +67,8 @@ const RUN_AGENTS_CARD_TITLE: &str = "Can I add additional agents to this task?";
 const RUN_AGENTS_ENV_NONE_LABEL: &str = "(no environment)";
 
 const RUN_AGENTS_EDITOR_OPEN: &str = "RunAgentsEditorOpen";
+
+const RUN_AGENTS_PICKER_HEIGHT: f32 = 36.;
 
 pub fn init(app: &mut AppContext) {
     use warpui::keymap::macros::*;
@@ -76,6 +82,11 @@ pub fn init(app: &mut AppContext) {
         FixedBinding::new(
             "numpadenter",
             RunAgentsCardViewAction::Accept,
+            id!(RunAgentsCardView::ui_name()),
+        ),
+        FixedBinding::new(
+            "ctrl-c",
+            RunAgentsCardViewAction::Reject,
             id!(RunAgentsCardView::ui_name()),
         ),
         FixedBinding::new(
@@ -149,6 +160,15 @@ impl RunAgentsEditState {
         }
     }
 
+    pub fn set_worker_host(&mut self, worker_host: String) {
+        if let RunAgentsExecutionMode::Remote {
+            worker_host: wh, ..
+        } = &mut self.execution_mode
+        {
+            *wh = worker_host;
+        }
+    }
+
     /// Returns `Some(reason)` if Accept must be disabled.
     /// Only hard block: OpenCode+Cloud.
     pub fn accept_disabled_reason(&self) -> Option<&'static str> {
@@ -189,8 +209,8 @@ struct RunAgentsCardHandles {
     model_picker: Option<ViewHandle<Dropdown<RunAgentsCardViewAction>>>,
     harness_picker: Option<ViewHandle<Dropdown<RunAgentsCardViewAction>>>,
     environment_picker: Option<ViewHandle<FilterableDropdown<RunAgentsCardViewAction>>>,
-    /// Visual-only host picker (currently always "Warp").
-    host_picker: Option<ViewHandle<Dropdown<RunAgentsCardViewAction>>>,
+    /// Text input for the worker host (e.g. "warp").
+    host_editor: Option<ViewHandle<EditorView>>,
 }
 
 #[derive(Clone, Debug)]
@@ -213,6 +233,9 @@ pub enum RunAgentsCardViewEvent {
 pub struct RunAgentsCardView {
     action_id: AIAgentActionId,
     state: RunAgentsEditState,
+    /// Snapshot of the request as received from the tool call, used to
+    /// reset on "Discard edits".
+    original_request: RunAgentsRequest,
     handles: RunAgentsCardHandles,
     spawning: Option<RunAgentsSpawningSnapshot>,
 
@@ -294,6 +317,7 @@ impl RunAgentsCardView {
         Self {
             action_id,
             state: RunAgentsEditState::from_request(request),
+            original_request: request.clone(),
             handles: RunAgentsCardHandles {
                 reject_button: Some(reject_button),
                 edit_button: Some(edit_button),
@@ -319,6 +343,7 @@ impl RunAgentsCardView {
         let new_state = RunAgentsEditState::from_request(request);
         if self.state != new_state {
             self.state = new_state;
+            self.original_request = request.clone();
             ctx.notify();
         }
     }
@@ -387,7 +412,6 @@ impl RunAgentsCardView {
     /// Lazily construct the picker dropdown views (idempotent).
     fn ensure_pickers(&mut self, ctx: &mut ViewContext<Self>) {
         // Shared picker styling.
-        const RUN_AGENTS_PICKER_HEIGHT: f32 = 36.;
         const ORCHESTRATE_PICKER_RADIUS: f32 = 4.;
         const RUN_AGENTS_PICKER_BORDER_WIDTH: f32 = 1.;
         const RUN_AGENTS_PICKER_FONT_SIZE: f32 = 14.;
@@ -539,7 +563,7 @@ impl RunAgentsCardView {
             let picker_styles_clone = picker_styles;
             let dropdown_handle = ctx.add_typed_action_view(move |ctx_dropdown| {
                 let mut dropdown = FilterableDropdown::<RunAgentsCardViewAction>::new(ctx_dropdown);
-                dropdown.set_use_overlay_layer(false, ctx_dropdown);
+                dropdown.set_use_overlay_layer(true, ctx_dropdown);
                 dropdown.set_main_axis_size(MainAxisSize::Max, ctx_dropdown);
                 dropdown.set_button_variant(ButtonVariant::Secondary);
                 dropdown.set_style(picker_styles_clone);
@@ -548,18 +572,15 @@ impl RunAgentsCardView {
             });
             dropdown_handle.update(ctx, |dropdown, ctx_dropdown| {
                 dropdown.set_menu_width(280.0, ctx_dropdown);
-                let envs = AgentConversationsModel::as_ref(ctx_dropdown)
-                    .get_all_environment_ids_and_names(ctx_dropdown);
-                let mut sorted_envs: Vec<(String, String)> = envs.into_iter().collect();
+                let all_envs = CloudAmbientAgentEnvironment::get_all(ctx_dropdown);
+                let mut sorted_envs: Vec<(String, String)> = all_envs
+                    .iter()
+                    .map(|env| (env.id.uid(), env.model().string_model.name.clone()))
+                    .collect();
                 sorted_envs.sort_by(|a, b| a.1.cmp(&b.1));
 
                 let mut items: Vec<MenuItem<DropdownAction<RunAgentsCardViewAction>>> = Vec::new();
                 let mut selected_name: Option<String> = None;
-                if sorted_envs.is_empty() {
-                    dropdown.set_menu_header_text_override(|_| {
-                        "Environment: loading\u{2026}".to_string()
-                    });
-                }
                 items.push(MenuItem::Item(
                     MenuItemFields::new(RUN_AGENTS_ENV_NONE_LABEL).with_on_select_action(
                         DropdownAction::SelectActionAndClose(
@@ -600,34 +621,38 @@ impl RunAgentsCardView {
             self.handles.environment_picker = Some(dropdown_handle);
         }
 
-        if self.handles.host_picker.is_none() {
-            let picker_padding_clone = picker_padding;
-            let picker_corner_radius_clone = picker_corner_radius;
-            let picker_background_clone = picker_background_warpui;
-            let picker_border_color_clone = picker_border_color_warpui;
-            let dropdown_handle = ctx.add_typed_action_view(move |ctx_dropdown| {
-                let mut dropdown = Dropdown::<RunAgentsCardViewAction>::new(ctx_dropdown);
-                dropdown.set_use_overlay_layer(false, ctx_dropdown);
-                dropdown.set_main_axis_size(MainAxisSize::Max, ctx_dropdown);
-                dropdown.set_style(DropdownStyle::ActionButtonSecondary, ctx_dropdown);
-                dropdown.set_top_bar_height(RUN_AGENTS_PICKER_HEIGHT, ctx_dropdown);
-                dropdown.set_padding(picker_padding_clone, ctx_dropdown);
-                dropdown.set_border_radius(picker_corner_radius_clone, ctx_dropdown);
-                dropdown.set_background(picker_background_clone, ctx_dropdown);
-                dropdown.set_border_color(picker_border_color_clone, ctx_dropdown);
-                dropdown.set_border_width(RUN_AGENTS_PICKER_BORDER_WIDTH, ctx_dropdown);
-                dropdown.set_font_size(RUN_AGENTS_PICKER_FONT_SIZE, ctx_dropdown);
-                dropdown.set_font_color(picker_font_color, ctx_dropdown);
-                dropdown
+        if self.handles.host_editor.is_none() {
+            let initial_host = match &state_snapshot.execution_mode {
+                RunAgentsExecutionMode::Remote { worker_host, .. } => worker_host.clone(),
+                RunAgentsExecutionMode::Local => RUN_AGENTS_WARP_WORKER_HOST.to_string(),
+            };
+            let editor_handle = ctx.add_typed_action_view(move |ctx_editor| {
+                let appearance = Appearance::as_ref(ctx_editor);
+                let mut editor = EditorView::single_line(
+                    SingleLineEditorOptions {
+                        text: TextOptions::ui_text(Some(RUN_AGENTS_PICKER_FONT_SIZE), appearance),
+                        propagate_and_no_op_vertical_navigation_keys:
+                            PropagateAndNoOpNavigationKeys::Always,
+                        ..Default::default()
+                    },
+                    ctx_editor,
+                );
+                editor.set_buffer_text(&initial_host, ctx_editor);
+                editor.set_placeholder_text("Worker host", ctx_editor);
+                editor
             });
-            dropdown_handle.update(ctx, |dropdown, ctx_dropdown| {
-                // Visual-only; clicking just closes the menu.
-                let item = MenuItemFields::new("Warp".to_string());
-                dropdown.set_rich_items(vec![MenuItem::Item(item)], ctx_dropdown);
-                dropdown.set_selected_by_index(0, ctx_dropdown);
+            ctx.subscribe_to_view(&editor_handle, |me, handle, event, ctx| match event {
+                EditorEvent::Edited(_) => {
+                    let text = handle.read(ctx, |editor, app| editor.buffer_text(app));
+                    me.state.set_worker_host(text);
+                    ctx.notify();
+                }
+                EditorEvent::Escape => {
+                    me.refocus_after_picker_close(ctx);
+                }
+                _ => {}
             });
-            Self::subscribe_picker_close(&dropdown_handle, ctx);
-            self.handles.host_picker = Some(dropdown_handle);
+            self.handles.host_editor = Some(editor_handle);
         }
 
         // Dropdown's internal selection display is unreliable in this
@@ -684,16 +709,21 @@ impl RunAgentsCardView {
                     dropdown.set_selected_by_name(RUN_AGENTS_ENV_NONE_LABEL, ctx_dropdown);
                     return;
                 }
-                let envs = AgentConversationsModel::as_ref(ctx_dropdown)
-                    .get_all_environment_ids_and_names(ctx_dropdown);
-                if let Some((_, name)) = envs.into_iter().find(|(id, _)| id == &env_id) {
-                    dropdown.set_selected_by_name(&name, ctx_dropdown);
+                let all_envs = CloudAmbientAgentEnvironment::get_all(ctx_dropdown);
+                if let Some(env) = all_envs.iter().find(|e| e.id.uid() == env_id) {
+                    dropdown.set_selected_by_name(&env.model().string_model.name, ctx_dropdown);
                 }
             });
         }
-        if let Some(host_picker) = self.handles.host_picker.clone() {
-            host_picker.update(ctx, |dropdown, ctx_dropdown| {
-                dropdown.set_selected_by_index(0, ctx_dropdown);
+        if let Some(host_editor) = self.handles.host_editor.clone() {
+            let worker_host = match &state.execution_mode {
+                RunAgentsExecutionMode::Remote { worker_host, .. } => worker_host.clone(),
+                RunAgentsExecutionMode::Local => RUN_AGENTS_WARP_WORKER_HOST.to_string(),
+            };
+            host_editor.update(ctx, |editor, ctx_editor| {
+                if editor.buffer_text(ctx_editor) != worker_host {
+                    editor.set_buffer_text(&worker_host, ctx_editor);
+                }
             });
         }
     }
@@ -778,7 +808,11 @@ impl TypedActionView for RunAgentsCardView {
             }
             RunAgentsCardViewAction::DiscardEdits => {
                 if self.state.is_editor_open {
-                    self.handle_toggle_edit(ctx);
+                    // Reset to the original tool-call values.
+                    self.state = RunAgentsEditState::from_request(&self.original_request);
+                    self.sync_card_buttons(ctx);
+                    self.sync_picker_selections(ctx);
+                    ctx.notify();
                 }
             }
             RunAgentsCardViewAction::ExecutionModeToggled { is_remote } => {
@@ -1137,10 +1171,27 @@ fn render_picker_row_quad(
         add_picker(
             &mut row,
             "Host",
-            handles
-                .host_picker
-                .as_ref()
-                .map(|p| ChildView::new(p).finish()),
+            handles.host_editor.as_ref().map(|editor| {
+                ConstrainedBox::new(
+                    Container::new(
+                        Flex::column()
+                            .with_main_axis_alignment(MainAxisAlignment::Center)
+                            .with_main_axis_size(MainAxisSize::Max)
+                            .with_child(ChildView::new(editor).finish())
+                            .finish(),
+                    )
+                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                    .with_border(
+                        Border::all(1.)
+                            .with_border_fill(Fill::Solid(ColorU::new(0x29, 0x29, 0x29, 0xff))),
+                    )
+                    .with_background(appearance.theme().surface_overlay_1())
+                    .with_horizontal_padding(12.)
+                    .finish(),
+                )
+                .with_height(RUN_AGENTS_PICKER_HEIGHT)
+                .finish()
+            }),
         );
         add_picker(
             &mut row,
@@ -1316,9 +1367,7 @@ fn empty_env_recommendation_message(
     if !worker_host.eq_ignore_ascii_case(RUN_AGENTS_WARP_WORKER_HOST) {
         return None;
     }
-    let env_count = AgentConversationsModel::as_ref(app)
-        .get_all_environment_ids_and_names(app)
-        .len();
+    let env_count = CloudAmbientAgentEnvironment::get_all(app).len();
     Some(if env_count > 0 {
         "We recommend selecting an environment for cloud agents.".to_string()
     } else {
