@@ -25,7 +25,6 @@ use warpui::{
 use warp_cli::agent::Harness;
 use warp_core::ui::theme::Fill;
 
-use crate::LLMPreferences;
 use crate::ai::agent::icons;
 use crate::ai::agent::{AIAgentActionId, AIAgentActionResultType};
 use crate::ai::blocklist::action_model::{
@@ -33,13 +32,13 @@ use crate::ai::blocklist::action_model::{
     RunAgentsSpawningSnapshot,
 };
 use crate::ai::blocklist::agent_view::orchestration_pill_bar::render_static_agent_pill;
-use crate::ai::blocklist::block::AIBlock;
 use crate::ai::blocklist::block::model::AIBlockModel;
 use crate::ai::blocklist::block::view_impl::WithContentItemSpacing;
+use crate::ai::blocklist::block::AIBlock;
 use crate::ai::blocklist::inline_action::inline_action_header::{HeaderConfig, InteractionMode};
 use crate::ai::blocklist::inline_action::inline_action_icons;
 use crate::ai::blocklist::inline_action::requested_action::{
-    CTRL_C_KEYSTROKE, ENTER_KEYSTROKE, render_requested_action_row_for_text,
+    render_requested_action_row_for_text, CTRL_C_KEYSTROKE, ENTER_KEYSTROKE,
 };
 use crate::ai::cloud_environments::CloudAmbientAgentEnvironment;
 use crate::ai::execution_profiles::model_menu_items::available_model_menu_items;
@@ -54,11 +53,14 @@ use crate::ui_components::blended_colors;
 use crate::ui_components::icons::Icon;
 use crate::view_components::action_button::{ButtonSize, KeystrokeSource, NakedTheme};
 use crate::view_components::compactible_action_button::{
-    CompactibleActionButton, MEDIUM_SIZE_SWITCH_THRESHOLD, RenderCompactibleActionButton,
+    CompactibleActionButton, RenderCompactibleActionButton, MEDIUM_SIZE_SWITCH_THRESHOLD,
 };
 use crate::view_components::compactible_split_action_button::CompactibleSplitActionButton;
-use crate::view_components::dropdown::{Dropdown, DropdownAction, DropdownEvent, DropdownStyle};
+use crate::view_components::dropdown::{
+    Dropdown, DropdownAction, DropdownEvent, DropdownStyle, DROPDOWN_PADDING,
+};
 use crate::view_components::{FilterableDropdown, FilterableDropdownEvent};
+use crate::LLMPreferences;
 
 const RUN_AGENTS_WARP_WORKER_HOST: &str = "warp";
 
@@ -547,6 +549,7 @@ impl RunAgentsCardView {
             let dropdown_handle = ctx.add_typed_action_view(move |ctx_dropdown| {
                 let mut dropdown = FilterableDropdown::<RunAgentsCardViewAction>::new(ctx_dropdown);
                 dropdown.set_use_overlay_layer(true, ctx_dropdown);
+                dropdown.set_always_show_filter(true, ctx_dropdown);
                 dropdown.set_main_axis_size(MainAxisSize::Max, ctx_dropdown);
                 dropdown.set_button_variant(ButtonVariant::Secondary);
                 dropdown.set_style(picker_styles_clone);
@@ -1183,24 +1186,29 @@ fn render_picker_row_quad(
             &mut row,
             "Host",
             handles.host_editor.as_ref().map(|editor| {
-                ConstrainedBox::new(
-                    Container::new(
-                        Flex::column()
-                            .with_main_axis_alignment(MainAxisAlignment::Center)
-                            .with_main_axis_size(MainAxisSize::Max)
-                            .with_child(ChildView::new(editor).finish())
-                            .finish(),
+                Container::new(
+                    ConstrainedBox::new(
+                        Container::new(
+                            Flex::column()
+                                .with_main_axis_alignment(MainAxisAlignment::Center)
+                                .with_main_axis_size(MainAxisSize::Max)
+                                .with_child(ChildView::new(editor).finish())
+                                .finish(),
+                        )
+                        .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
+                        .with_border(
+                            Border::all(1.)
+                                .with_border_fill(Fill::Solid(ColorU::new(0x29, 0x29, 0x29, 0xff))),
+                        )
+                        .with_background(appearance.theme().surface_overlay_1())
+                        .with_horizontal_padding(12.)
+                        .finish(),
                     )
-                    .with_corner_radius(CornerRadius::with_all(Radius::Pixels(4.)))
-                    .with_border(
-                        Border::all(1.)
-                            .with_border_fill(Fill::Solid(ColorU::new(0x29, 0x29, 0x29, 0xff))),
-                    )
-                    .with_background(appearance.theme().surface_overlay_1())
-                    .with_horizontal_padding(12.)
+                    .with_height(RUN_AGENTS_PICKER_HEIGHT)
                     .finish(),
                 )
-                .with_height(RUN_AGENTS_PICKER_HEIGHT)
+                .with_margin_top(DROPDOWN_PADDING)
+                .with_margin_bottom(DROPDOWN_PADDING)
                 .finish()
             }),
         );
