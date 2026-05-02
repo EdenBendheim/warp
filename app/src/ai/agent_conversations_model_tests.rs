@@ -207,6 +207,7 @@ fn test_display_status_uses_active_execution_over_previous_conversation_status()
                 parent_conversation_id: None,
                 run_id: Some(task_id.clone()),
                 autoexecute_override: None,
+                last_event_sequence: None,
             },
         );
 
