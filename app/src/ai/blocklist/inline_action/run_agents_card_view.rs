@@ -940,13 +940,18 @@ impl View for RunAgentsCardView {
 
         // In-flight: the user has accepted the orchestrate card and
         // the async dispatch batch is running. Render the "Spawning N
-        // agents…" card until the outcome callback clears the
-        // snapshot. This addresses the UX gap where the confirmation
-        // card otherwise stays visible for hundreds of ms (Local +
-        // harness `create_agent_task` round-trip), tempting users to
-        // mash Enter.
+        // agents…" card. We check both `self.spawning` (set by the
+        // executor's SpawningStarted event) and the action status
+        // (RunningAsync, set synchronously by execute_run_agents)
+        // because the event arrives one tick after the status change.
         if let Some(snapshot) = &self.spawning {
             return render_spawning_card(snapshot, appearance, app);
+        }
+        if matches!(status, Some(AIActionStatus::RunningAsync)) {
+            let snapshot = RunAgentsSpawningSnapshot {
+                agent_count: self.state.agent_run_configs.len(),
+            };
+            return render_spawning_card(&snapshot, appearance, app);
         }
 
         // Restored-from-history but not finished: there's no point in
