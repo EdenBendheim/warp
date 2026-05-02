@@ -1262,7 +1262,7 @@ fn drop_files_covered_by_repos_handles_nested_repo_paths() {
 /// about for assertions, ignoring any lines the helper tests weren't asked to produce.
 fn parsed_file_paths(path: &Path) -> Vec<String> {
     let contents = fs::read_to_string(path).unwrap_or_default();
-    let entries = parse_declarations(&contents, &fake_task_id());
+    let entries = parse_declarations(&contents, &fake_log_label());
     entries
         .into_iter()
         .filter(|e| e.kind == EntryKind::File)
@@ -1460,7 +1460,7 @@ fn e2e_repo_plus_inside_and_outside_files_filters_overlap() {
         .block_on(upload_snapshot_from_declarations_file(
             &decl_path,
             client,
-            &fake_task_id(),
+            &fake_log_label(),
         ))
         .expect("pipeline returned None");
     let summary = SnapshotSummary::from_entries(&outcome.entries, outcome.manifest_uploaded);

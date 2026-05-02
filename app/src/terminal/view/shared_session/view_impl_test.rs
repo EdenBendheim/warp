@@ -452,6 +452,8 @@ fn create_cloud_mode_task_for_user(creator_uid: &str) -> AmbientAgentTask {
         is_sandbox_running: false,
         agent_config_snapshot: None,
         artifacts: vec![],
+        last_event_sequence: None,
+        children: vec![],
     }
 }
 

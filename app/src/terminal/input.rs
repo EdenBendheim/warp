@@ -2155,8 +2155,7 @@ impl Input {
                 {
                     me.replace_buffer_content(prompt, ctx);
                     let window_id = ctx.window_id();
-                    let toast_message =
-                        format!("Failed to prepare cloud handoff: {error_message}");
+                    let toast_message = format!("Failed to prepare cloud handoff: {error_message}");
                     ToastStack::handle(ctx).update(ctx, |ts, ctx| {
                         ts.add_ephemeral_toast(
                             DismissibleToast::error(toast_message),
@@ -12151,18 +12150,14 @@ impl Input {
                 // intact so the next submit picks them back up.
                 if let Some(ambient_agent_view_model) = self.ambient_agent_view_model() {
                     let model = ambient_agent_view_model.as_ref(ctx);
-                    if model.is_local_to_cloud_handoff()
-                        && !model.is_handoff_ready_to_submit()
-                    {
+                    if model.is_local_to_cloud_handoff() && !model.is_handoff_ready_to_submit() {
                         let window_id = ctx.window_id();
                         ToastStack::handle(ctx).update(ctx, |ts, ctx| {
                             ts.add_ephemeral_toast(
                                 DismissibleToast::default(
                                     "Preparing handoff — try again in a moment.".to_owned(),
                                 )
-                                .with_object_id(
-                                    "local-to-cloud-handoff-not-ready".to_owned(),
-                                ),
+                                .with_object_id("local-to-cloud-handoff-not-ready".to_owned()),
                                 window_id,
                                 ctx,
                             );
